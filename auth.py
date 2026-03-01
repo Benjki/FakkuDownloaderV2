@@ -78,15 +78,16 @@ def login(browser: Browser, config: Config) -> list[dict]:
     except Exception as e:
         raise AuthError(f'TOTP field did not appear after login: {e}') from e
 
-    # Generate TOTP code and submit
-    # The "Verify Login" button has no type="submit" attribute, so match by text
+    # Generate TOTP code and type it character by character.
+    # The OTP input uses a React-controlled component that auto-submits once all
+    # 6 digits are entered. page.fill() bypasses React's onChange events and leaves
+    # the button disabled; press_sequentially() fires real input events per keystroke.
     totp_code = pyotp.TOTP(config.fakku_totp_secret).now()
     logger.info('Submitting TOTP code...')
     try:
-        page.fill('input[name="otp"]', totp_code)
-        page.click('button:has-text("Verify Login")')
+        page.locator('input[name="otp"]').press_sequentially(totp_code)
     except Exception as e:
-        raise AuthError(f'Failed to submit TOTP: {e}') from e
+        raise AuthError(f'Failed to enter TOTP code: {e}') from e
 
     # Verify we've left the login page
     try:
