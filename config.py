@@ -47,7 +47,7 @@ def load_config() -> Config:
     if missing:
         sys.exit(f"[config] Missing required env vars: {', '.join(missing)}")
 
-    chrome_offset_raw = os.getenv('CHROME_OFFSET', '').strip()
+    chrome_offset_raw = os.getenv('CHROME_OFFSET', '').split('#')[0].strip()
 
     return Config(
         fakku_username=os.getenv('FAKKU_USERNAME'),
