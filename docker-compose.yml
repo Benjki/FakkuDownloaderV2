@@ -1,0 +1,27 @@
+services:
+
+  # Full download run
+  downloader:
+    build: .
+    env_file: .env
+    environment:
+      DONE_FILE: /app/queue/done.txt
+      COOKIES_FILE: /app/queue/cookies.pickle
+      TEMP_DIR: /app/queue/tmp
+      STORAGE_PRIMARY: /app/downloaded
+    volumes:
+      - ./downloaded:/app/downloaded   # CBZ output library
+      - ./queue:/app/queue             # done.txt, cookies.pickle, tmp/
+
+  # Dry-run: prints plan, writes nothing
+  dry-run:
+    build: .
+    env_file: .env
+    command: ["python", "main.py", "--dry-run"]
+    environment:
+      DONE_FILE: /app/queue/done.txt
+      COOKIES_FILE: /app/queue/cookies.pickle
+      TEMP_DIR: /app/queue/tmp
+      STORAGE_PRIMARY: /app/downloaded
+    volumes:
+      - ./queue:/app/queue

@@ -1,0 +1,14 @@
+.env
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+downloaded/
+queue/
+tmp/
+logs/
+*.pickle
+done.txt
+.git
+.idea
