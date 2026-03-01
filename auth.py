@@ -57,16 +57,18 @@ def login(browser: Browser, config: Config) -> list[dict]:
     page.goto(LOGIN_URL, wait_until='networkidle')
 
     # Wait for the login form to render (React/Next.js app — DOM ready isn't enough)
+    # Email input has name="email" but no type attribute
     try:
-        page.wait_for_selector('input[type="email"]', state='visible', timeout=30000)
+        page.wait_for_selector('input[name="email"]', state='visible', timeout=30000)
     except Exception as e:
         raise AuthError(f'Login form did not appear — page may have changed: {e}') from e
 
     # Fill email + password
+    # Submit button has no type="submit"; exclude the tab button (role="tab") by scoping to form
     try:
-        page.fill('input[type="email"]', config.fakku_username)
+        page.fill('input[name="email"]', config.fakku_username)
         page.fill('input[name="password"]', config.fakku_password)
-        page.click('button[type="submit"]')
+        page.locator('form button:has-text("Login")').click()
     except Exception as e:
         raise AuthError(f'Failed to fill login form: {e}') from e
 
