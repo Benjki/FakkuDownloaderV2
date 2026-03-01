@@ -54,7 +54,13 @@ def login(browser: Browser, config: Config) -> list[dict]:
     """
     page = browser.page
     logger.info('Navigating to login page...')
-    page.goto(LOGIN_URL, wait_until='domcontentloaded')
+    page.goto(LOGIN_URL, wait_until='networkidle')
+
+    # Wait for the login form to render (React app — DOM ready isn't enough)
+    try:
+        page.wait_for_selector('input[name="username"]', state='visible', timeout=30000)
+    except Exception as e:
+        raise AuthError(f'Login form did not appear — page may have changed: {e}') from e
 
     # Fill username + password
     try:
@@ -66,7 +72,7 @@ def login(browser: Browser, config: Config) -> list[dict]:
 
     # Wait for TOTP field
     try:
-        page.wait_for_selector('input[name="totp"]', timeout=15000)
+        page.wait_for_selector('input[name="totp"]', state='visible', timeout=30000)
     except Exception as e:
         raise AuthError(f'TOTP field did not appear after login: {e}') from e
 
