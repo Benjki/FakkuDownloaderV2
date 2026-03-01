@@ -1,0 +1,37 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: fakku-downloader
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: fakku-downloader
+              image: fakku-downloader:latest
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "1000m"
+                  memory: "2Gi"
+              envFrom:
+                - secretRef:
+                    name: fakku-secrets
+              volumeMounts:
+                - name: primary-storage
+                  mountPath: /downloaded
+                - name: queue
+                  mountPath: /queue
+          volumes:
+            - name: primary-storage
+              persistentVolumeClaim:
+                claimName: fakku-primary-pvc
+            - name: queue
+              persistentVolumeClaim:
+                claimName: fakku-queue-pvc
