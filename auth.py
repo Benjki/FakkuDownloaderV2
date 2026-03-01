@@ -70,18 +70,19 @@ def login(browser: Browser, config: Config) -> list[dict]:
     except Exception as e:
         raise AuthError(f'Failed to fill login form: {e}') from e
 
-    # Wait for TOTP field
+    # Wait for TOTP field (input name is "otp", not "totp")
     try:
-        page.wait_for_selector('input[name="totp"]', state='visible', timeout=30000)
+        page.wait_for_selector('input[name="otp"]', state='visible', timeout=30000)
     except Exception as e:
         raise AuthError(f'TOTP field did not appear after login: {e}') from e
 
     # Generate TOTP code and submit
+    # The "Verify Login" button has no type="submit" attribute, so match by text
     totp_code = pyotp.TOTP(config.fakku_totp_secret).now()
     logger.info('Submitting TOTP code...')
     try:
-        page.fill('input[name="totp"]', totp_code)
-        page.click('button[type="submit"]')
+        page.fill('input[name="otp"]', totp_code)
+        page.click('button:has-text("Verify Login")')
     except Exception as e:
         raise AuthError(f'Failed to submit TOTP: {e}') from e
 
