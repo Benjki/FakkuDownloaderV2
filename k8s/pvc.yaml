@@ -1,0 +1,15 @@
+# Persistent storage for done.txt, cookies.pickle, and temp pages.
+# Uses k3s's built-in local-path provisioner — no extra setup needed.
+# Data lives at /var/lib/rancher/k3s/storage/<pvc-name> on the node.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fakkudownloader-queue
+  namespace: fakkudownloader-v2
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi   # temp pages can spike; done.txt and cookies are tiny

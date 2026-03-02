@@ -2,36 +2,44 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: fakku-downloader
+  namespace: default
 spec:
-  schedule: "0 2 * * *"
-  concurrencyPolicy: Forbid
+  schedule: "0 2 * * *"      # 2 AM daily
+  concurrencyPolicy: Forbid  # never run two instances at once
   jobTemplate:
     spec:
+      backoffLimit: 0        # no automatic retries — failures are notified via email
       template:
         spec:
           restartPolicy: Never
           containers:
             - name: fakku-downloader
-              image: fakku-downloader:latest
+              # Update this tag after each docker build & push
+              image: YOUR_DOCKERHUB_USERNAME/fakkudownloader:latest
+              envFrom:
+                - secretRef:
+                    name: fakku-secrets
               resources:
                 requests:
                   cpu: "500m"
                   memory: "1Gi"
                 limits:
-                  cpu: "1000m"
+                  cpu: "1"
                   memory: "2Gi"
-              envFrom:
-                - secretRef:
-                    name: fakku-secrets
               volumeMounts:
-                - name: primary-storage
-                  mountPath: /downloaded
+                # done.txt, cookies.pickle, and tmp/ — persisted by PVC
                 - name: queue
                   mountPath: /queue
+                # Manga library — point hostPath at your actual mount (NAS, drive, etc.)
+                - name: library
+                  mountPath: /library
           volumes:
-            - name: primary-storage
-              persistentVolumeClaim:
-                claimName: fakku-primary-pvc
+            # PVC for queue data: survives pod restarts, provisioned by k3s local-path
             - name: queue
               persistentVolumeClaim:
-                claimName: fakku-queue-pvc
+                claimName: fakkudl-queue
+            # HostPath for the library: change path to wherever your storage is mounted
+            - name: library
+              hostPath:
+                path: /mnt/media/manga    # <-- update this
+                type: DirectoryOrCreate
