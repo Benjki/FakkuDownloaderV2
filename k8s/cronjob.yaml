@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: fakku-downloader
-  namespace: default
+  namespace: fakkudownloader-v2
 spec:
   schedule: "0 2 * * *"      # 2 AM daily
   concurrencyPolicy: Forbid  # never run two instances at once
@@ -21,11 +21,11 @@ spec:
                     name: fakku-secrets
               resources:
                 requests:
+                  cpu: "100m"
+                  memory: "512Mi"
+                limits:
                   cpu: "500m"
                   memory: "1Gi"
-                limits:
-                  cpu: "1"
-                  memory: "2Gi"
               volumeMounts:
                 # done.txt, cookies.pickle, and tmp/ — persisted by PVC
                 - name: queue
@@ -37,7 +37,7 @@ spec:
             # PVC for queue data: survives pod restarts, provisioned by k3s local-path
             - name: queue
               persistentVolumeClaim:
-                claimName: fakkudl-queue
+                claimName: fakkudownloader-queue
             # HostPath for the library: change path to wherever your storage is mounted
             - name: library
               hostPath:

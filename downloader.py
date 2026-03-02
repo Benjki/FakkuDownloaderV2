@@ -70,8 +70,15 @@ class Downloader:
             if m:
                 page_count = int(m.group(1))
         else:
-            next_btn = soup.find('a', title='Next Page') or soup.find('a', rel='next')
-            if next_btn:
+            # New pagination style: individual "Page N" links, no "Last Page" link
+            page_nums = [
+                int(m.group(1))
+                for a in soup.find_all('a', title=re.compile(r'^Page \d+$'))
+                if (m := re.search(r'^Page (\d+)$', a.get('title', '')))
+            ]
+            if page_nums:
+                page_count = max(page_nums)
+            elif soup.find('a', title='Next Page') or soup.find('a', rel='next'):
                 raise PaginationError(
                     '"Last Page" selector not found but next-page indicator exists. '
                     'The collection CSS selector may need updating.'

@@ -80,6 +80,14 @@ def run_dry_run(config) -> None:
         m = re.search(r'/page/(\d+)', last_page_a.get('href', ''))
         if m:
             page_count = int(m.group(1))
+    else:
+        page_nums = [
+            int(m.group(1))
+            for a in soup.find_all('a', title=re.compile(r'^Page \d+$'))
+            if (m := re.search(r'^Page (\d+)$', a.get('title', '')))
+        ]
+        if page_nums:
+            page_count = max(page_nums)
 
     all_urls: list[str] = []
     for pg in range(1, page_count + 1):
