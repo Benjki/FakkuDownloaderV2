@@ -68,10 +68,10 @@ def append_done(path: str, url: str) -> None:
 
 
 def first_letter(name: str) -> str:
-    """Return uppercase first alphanumeric char, or '#' for digit-first titles."""
+    """Return uppercase first alpha char, or '0-9' for digit-first titles."""
     for ch in name:
         if ch.isalpha():
             return ch.upper()
         if ch.isdigit():
-            return '#'
-    return '#'
+            return '0-9'
+    return '0-9'

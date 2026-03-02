@@ -12,6 +12,7 @@ from organizer import (
     check_and_move_oneshot,
     check_ownership,
     compute_short_title,
+    detect_series,
     extract_metadata,
     pack_cbz,
     route_book,
@@ -33,6 +34,8 @@ def make_oneshot(**kw):
         volume_number=None,
         short_title=None,
         is_cover=False,
+        multi_collection=False,
+        missing_volumes=False,
     )
     defaults.update(kw)
     return Book(**defaults)
@@ -49,6 +52,8 @@ def make_series(**kw):
         volume_number=1,
         short_title='Chapter 1',
         is_cover=False,
+        multi_collection=False,
+        missing_volumes=False,
     )
     defaults.update(kw)
     return Book(**defaults)
@@ -69,8 +74,9 @@ class TestRouteBook:
         assert route_book(b) == 'Covers'
 
     def test_oneshot_routing(self):
-        b = make_oneshot()
-        assert route_book(b) == '%%%OneShots%%%'
+        b = make_oneshot()  # title='Test Book' → letter 'T'
+        result = route_book(b).replace('\\', '/')
+        assert result == 'T/%%%OneShots%%%'
 
     def test_series_routing_letter(self):
         b = make_series(series_name='Attack on Titan', author='Isayama')
@@ -80,7 +86,7 @@ class TestRouteBook:
     def test_series_routing_digit_first(self):
         b = make_series(series_name='3x3 Eyes', author='Author')
         result = route_book(b).replace('\\', '/')
-        assert result.startswith('#/')
+        assert result.startswith('0-9/')
 
     def test_series_folder_contains_author(self):
         b = make_series(series_name='My Series', author='Some Author')
@@ -90,6 +96,22 @@ class TestRouteBook:
     def test_cover_takes_priority_over_series(self):
         b = make_series(is_cover=True, pages=2)
         assert route_book(b) == 'Covers'
+
+    def test_multi_collection_routes_to_fix_manually(self):
+        b = make_oneshot(multi_collection=True)
+        assert route_book(b) == 'TO FIX MANUALLY'
+
+    def test_multi_collection_takes_priority_over_cover(self):
+        b = make_oneshot(pages=2, is_cover=True, multi_collection=True)
+        assert route_book(b) == 'TO FIX MANUALLY'
+
+    def test_missing_volumes_routes_to_fix_manually(self):
+        b = make_series(missing_volumes=True)
+        assert route_book(b) == 'TO FIX MANUALLY'
+
+    def test_missing_volumes_takes_priority_over_series(self):
+        b = make_series(series_name='My Series', volume_number=3, missing_volumes=True)
+        assert route_book(b) == 'TO FIX MANUALLY'
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +168,8 @@ class TestComputeShortTitle:
 
 class TestCheckAndMoveOneshot:
     def test_moves_single_match(self, tmp_path):
-        oneshots = tmp_path / '%%%OneShots%%%'
-        oneshots.mkdir()
+        oneshots = tmp_path / 'M' / '%%%OneShots%%%'  # vol1_title='My Series Chapter 1' → M
+        oneshots.mkdir(parents=True)
         cbz = oneshots / 'My Series Chapter 1 [Author].cbz'
         cbz.write_bytes(b'fake')
 
@@ -159,14 +181,14 @@ class TestCheckAndMoveOneshot:
         assert len(list(dest_dir.glob('*.cbz'))) == 1
 
     def test_no_match_does_not_crash(self, tmp_path):
-        oneshots = tmp_path / '%%%OneShots%%%'
-        oneshots.mkdir()
+        oneshots = tmp_path / 'V' / '%%%OneShots%%%'  # vol1_title='Vol 1' → V
+        oneshots.mkdir(parents=True)
         # No files present — should log warning but not raise
         check_and_move_oneshot('Ghost Series', 'Author', 'Vol 1', str(tmp_path), 'G/Ghost Series [Author]')
 
     def test_multiple_matches_no_move(self, tmp_path):
-        oneshots = tmp_path / '%%%OneShots%%%'
-        oneshots.mkdir()
+        oneshots = tmp_path / 'M' / '%%%OneShots%%%'  # vol1_title='My Series Chapter 1' → M
+        oneshots.mkdir(parents=True)
         (oneshots / 'My Series Chapter 1 [Author] v1.cbz').write_bytes(b'x')
         (oneshots / 'My Series Chapter 1 [Author] v2.cbz').write_bytes(b'x')
 
@@ -285,3 +307,108 @@ class TestPackCbz:
         empty.mkdir()
         with pytest.raises(ValueError, match='No PNG'):
             pack_cbz(str(empty), str(tmp_path / 'out.cbz'), [])
+
+
+# ---------------------------------------------------------------------------
+# detect_series
+# ---------------------------------------------------------------------------
+
+# Mirrors the actual Playwright-rendered HTML structure from FAKKU (March 2026).
+# Volume list uses <b><a> (NOT <strong><a>) and <div> (NOT <p>) for the number.
+_SERIES_HTML_TEMPLATE = """\
+<html><body>
+<div class="col-span-full w-full text-left text-sm">
+  <h2>This chapter is part of <em><a href="/collections/my-test-series">My Test Series</a></em>.</h2>
+</div>
+<ul class="relative col-span-full w-full space-y-2">
+  <li class="chapter">
+    <div class="flex-none text-right text-sm">1</div>
+    <div class="w-full flex-1 text-left">
+      <b><a href="/hentai/my-test-series-chapter-1">Chapter 1 Title</a></b>
+    </div>
+    <div class="hidden"><a href="/hentai/my-test-series-chapter-1">Start Reading</a></div>
+  </li>
+  <li class="chapter active">
+    <div class="flex-none text-right text-sm">2</div>
+    <div class="w-full flex-1 text-left">
+      <b><a href="/hentai/my-test-series-chapter-2">Chapter 2 Title</a></b>
+    </div>
+    <div class="hidden"><a href="/hentai/my-test-series-chapter-2">Start Reading</a></div>
+  </li>
+</ul>
+</body></html>"""
+
+
+class TestDetectSeries:
+    def test_detects_series_name(self):
+        name, vol, _ = detect_series(
+            _SERIES_HTML_TEMPLATE,
+            'https://www.fakku.net/hentai/my-test-series-chapter-2',
+            None,
+        )
+        assert name == 'My Test Series'
+
+    def test_detects_volume_number_vol2(self):
+        _, vol, _ = detect_series(
+            _SERIES_HTML_TEMPLATE,
+            'https://www.fakku.net/hentai/my-test-series-chapter-2',
+            None,
+        )
+        assert vol == 2
+
+    def test_detects_volume_number_vol1(self):
+        _, vol, _ = detect_series(
+            _SERIES_HTML_TEMPLATE,
+            'https://www.fakku.net/hentai/my-test-series-chapter-1',
+            None,
+        )
+        assert vol == 1
+
+    def test_no_series_returns_none_triple(self):
+        name, vol, short = detect_series(
+            '<html><body><p>No collection here</p></body></html>',
+            'https://www.fakku.net/hentai/standalone',
+            None,
+        )
+        assert (name, vol, short) == (None, None, None)
+
+    def test_multiple_collections_returns_sentinel(self):
+        """Books in multiple collections return the multi_collection sentinel."""
+        html = """\
+<html><body>
+<div>
+  <h2>This chapter is part of <em><a href="/collections/series-a">Series A</a></em>.</h2>
+</div>
+<ul>
+  <li>
+    <div>1</div>
+    <div><b><a href="/hentai/some-book">Some Book</a></b></div>
+  </li>
+</ul>
+<div>
+  <h2>This chapter is part of <em><a href="/collections/umbrella-collab">Big Collab</a></em>.</h2>
+</div>
+<ul>
+  <li>
+    <div>5</div>
+    <div><b><a href="/hentai/some-book">Some Book</a></b></div>
+  </li>
+</ul>
+</body></html>"""
+        name, vol, short = detect_series(
+            html,
+            'https://www.fakku.net/hentai/some-book',
+            None,
+        )
+        assert name == '__multi_collection__'
+        assert vol is None
+        assert short is None
+
+    def test_short_title_is_none(self):
+        """detect_series always returns None for short_title; caller computes it."""
+        _, _, short = detect_series(
+            _SERIES_HTML_TEMPLATE,
+            'https://www.fakku.net/hentai/my-test-series-chapter-2',
+            None,
+        )
+        assert short is None

@@ -3,6 +3,7 @@
 import logging
 import re
 import shutil
+import struct
 import time
 import traceback
 from pathlib import Path
@@ -14,7 +15,7 @@ import notifier as notifier_module
 from book import Book
 from browser import Browser
 from config import Config
-from helper import load_done_file, append_done, create_folder_if_missing, normalise_url
+from helper import load_done_file, append_done, create_folder_if_missing, normalise_url, replace_illegal
 from organizer import (
     MetadataError,
     check_and_move_oneshot,
@@ -111,10 +112,10 @@ class Downloader:
     # Per-book orchestration
     # ------------------------------------------------------------------
 
-    def download_book(self, url: str) -> str:
+    def download_book(self, url: str) -> dict:
         """
         Full per-book flow (steps 1-13 from spec Section 7.1).
-        Returns a display name for the success summary.
+        Returns a report dict for the success summary email.
         Raises on unrecoverable error — caller catches and halts.
         """
         config = self._config
@@ -130,7 +131,7 @@ class Downloader:
             logger.warning('Not owned — skipping: %s', url)
             append_done(config.done_file, url)
             self._done.add(normalise_url(url))
-            return f'[SKIP/NOT_OWNED] {url}'
+            return {'display_name': url, 'skipped': True, 'skip_reason': 'not owned', 'url': url}
 
         # 3. Extract metadata
         meta = extract_metadata(html)
@@ -144,10 +145,15 @@ class Downloader:
 
         # 5. Series detection
         series_name, volume_number, short_title = None, None, None
+        multi_collection = False
         if not is_cover:
             session = self._make_requests_session()
-            series_name, volume_number, _ = detect_series(html, url, session)
-            if series_name:
+            raw_series, volume_number, _ = detect_series(html, url, session)
+            if raw_series == '__multi_collection__':
+                multi_collection = True
+                volume_number = None
+            elif raw_series:
+                series_name = raw_series
                 short_title = compute_short_title(title, series_name)
 
         # 6. Build Book dataclass
@@ -161,26 +167,63 @@ class Downloader:
             volume_number=volume_number,
             short_title=short_title,
             is_cover=is_cover,
+            multi_collection=multi_collection,
         )
 
         logger.info('Downloading: %s (%d pages)', book.display_name(), pages)
 
-        # 7. Retroactive one-shot → series move (vol.N >= 2 only)
+        # 7. Retroactive one-shot → series move, then missing-volume check.
         rel_dir = route_book(book)
-        series_dir_abs = str(Path(config.storage_primary) / rel_dir)
+        series_dir_abs = Path(config.storage_primary) / rel_dir
+        series_dir_created = not series_dir_abs.exists()
+        oneshot_move = None
+        missing_vol_nums: list[int] = []
+
         if book.is_series() and book.volume_number and book.volume_number >= 2:
-            if not Path(series_dir_abs).exists():
-                check_and_move_oneshot(
-                    series_name, author, series_name, config.storage_primary, rel_dir
+            series_safe = replace_illegal(series_name).lower()
+
+            # Try to rescue vol.1 from %%%OneShots%%% if it's not yet in the series dir.
+            vol1_present = series_dir_abs.exists() and any(
+                f.name.lower().startswith(series_safe + ' vol.1')
+                for f in series_dir_abs.glob('*.cbz')
+            )
+            if not vol1_present:
+                oneshot_move = check_and_move_oneshot(
+                    series_name, author, series_name, config.storage_primary, str(rel_dir)
                 )
+
+            # After the rescue attempt, verify every preceding volume is in the series dir.
+            # series_dir_abs may now exist (created by the move above), so re-check.
+            for k in range(1, book.volume_number):
+                k_present = series_dir_abs.exists() and any(
+                    f.name.lower().startswith(f'{series_safe} vol.{k}')
+                    for f in series_dir_abs.glob('*.cbz')
+                )
+                if not k_present:
+                    missing_vol_nums.append(k)
+
+            if missing_vol_nums:
+                logger.warning(
+                    '"%s": vol.%s not found — routing to "TO FIX MANUALLY".',
+                    series_name,
+                    ', '.join(str(k) for k in missing_vol_nums),
+                )
+                book.missing_volumes = True
+                rel_dir = route_book(book)  # re-routes to TO FIX MANUALLY
+                series_dir_abs = Path(config.storage_primary) / rel_dir
+                series_dir_created = not series_dir_abs.exists()
 
         # 8. Create temp directory for this book's pages
         temp_dir = str(Path(config.temp_dir) / _safe_dirname(title))
         create_folder_if_missing(temp_dir)
 
-        # 9. Screenshot each page
+        # 9. Screenshot each page (skip pages already captured in a previous run)
         for page_num in range(1, pages + 1):
             dest = str(Path(temp_dir) / f'{page_num}.png')
+            if self._page_already_done(dest):
+                logger.info('Page %d/%d (cached)', page_num, pages)
+                continue
+            logger.info('Page %d/%d', page_num, pages)
             self.download_page(url, dest, page_num)
 
         # 10. Page count validation (at least 80% present)
@@ -204,7 +247,34 @@ class Downloader:
         self._done.add(normalise_url(url))
 
         logger.info('Done: %s -> %s', book.display_name(), cbz_path)
-        return book.display_name()
+        if multi_collection:
+            routing = 'multi_collection'
+        elif book.missing_volumes:
+            routing = 'missing_volumes'
+        elif is_cover:
+            routing = 'cover'
+        elif series_name:
+            routing = 'series'
+        else:
+            routing = 'oneshot'
+
+        return {
+            'display_name': book.display_name(),
+            'skipped': False,
+            'url': normalise_url(url),
+            'title': title,
+            'author': author,
+            'pages': pages,
+            'routing': routing,
+            'series_name': series_name,
+            'volume_number': volume_number,
+            'missing_vol_nums': missing_vol_nums,
+            'series_dir': str(rel_dir),
+            'series_dir_created': series_dir_created if series_name else None,
+            'cbz_filename': filename,
+            'cbz_path': cbz_path,
+            'oneshot_move': oneshot_move,
+        }
 
     def download_page(self, book_url: str, dest: str, page_num: int) -> None:
         """
@@ -220,8 +290,11 @@ class Downloader:
                 reader_url = f'{book_url}/read/page/{page_num}'
                 page.goto(reader_url, wait_until='domcontentloaded')
 
-                # Soft-ban check — unexpected redirect means possible rate-limit
-                if '/read/page/' not in page.url:
+                # Soft-ban check — detect redirect away from this book's reader entirely.
+                # The SPA may normalize /read/page/1 → /read, so allow both forms;
+                # only flag a redirect that leaves the book's URL namespace.
+                book_base = book_url.rstrip('/')
+                if f'{book_base}/read' not in page.url:
                     raise RuntimeError(
                         f'Unexpected redirect to {page.url} — possible soft ban'
                     )
@@ -250,30 +323,14 @@ class Downloader:
                         }}"""
                     )
 
-                # Get canvas dimensions
-                canvas_idx = max(0, (layers or 1) - 2)
-                width = page.evaluate(
-                    f"""() => {{
-                        const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
-                        if (!iframe || !iframe.contentDocument) return 1440;
-                        const canvases = iframe.contentDocument.getElementsByTagName('canvas');
-                        return canvases[{canvas_idx}] ? canvases[{canvas_idx}].width : 1440;
-                    }}"""
-                )
-                height = page.evaluate(
-                    f"""() => {{
-                        const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
-                        if (!iframe || !iframe.contentDocument) return 2560;
-                        const canvases = iframe.contentDocument.getElementsByTagName('canvas');
-                        return canvases[{canvas_idx}] ? canvases[{canvas_idx}].height : 2560;
-                    }}"""
-                )
-
-                page.set_viewport_size({'width': int(width), 'height': int(height)})
+                # Wait for the page to fully render before capturing
                 time.sleep(config.page_wait)
 
-                # Take screenshot
-                page.screenshot(path=dest, full_page=False)
+                # Screenshot the canvas element directly — this captures only the
+                # manga page pixels with no reader UI padding or surrounding whitespace.
+                canvas_idx = max(0, (layers or 1) - 2)
+                canvas_locator = frame_locator.locator('canvas').nth(canvas_idx)
+                canvas_locator.screenshot(path=dest)
 
                 # Validate file size
                 size_kb = Path(dest).stat().st_size / 1024
@@ -282,8 +339,16 @@ class Downloader:
                         f'Screenshot too small ({size_kb:.1f} KB < {config.min_image_size_kb} KB)'
                     )
 
-                # Restore viewport for next navigation
-                page.set_viewport_size({'width': 1440, 'height': 2560})
+                # Validate image dimensions against allowlist (if configured)
+                if config.allowed_image_dimensions:
+                    w, h = _png_dimensions(dest)
+                    if (w, h) not in config.allowed_image_dimensions:
+                        allowed = ', '.join(f'{aw}x{ah}' for aw, ah in config.allowed_image_dimensions)
+                        raise ValueError(
+                            f'Unexpected screenshot dimensions {w}x{h} '
+                            f'(allowed: {allowed})'
+                        )
+
                 return
 
             except Exception as e:
@@ -297,6 +362,23 @@ class Downloader:
     # Helpers
     # ------------------------------------------------------------------
 
+    def _page_already_done(self, path: str) -> bool:
+        """Return True if path exists, meets the min size, and (if configured) has valid dimensions."""
+        config = self._config
+        p = Path(path)
+        if not p.exists():
+            return False
+        if p.stat().st_size / 1024 < config.min_image_size_kb:
+            return False
+        if config.allowed_image_dimensions:
+            try:
+                w, h = _png_dimensions(path)
+                if (w, h) not in config.allowed_image_dimensions:
+                    return False
+            except Exception:
+                return False
+        return True
+
     def _make_requests_session(self) -> requests.Session:
         """Build a requests.Session with current browser cookies."""
         session = requests.Session()
@@ -307,7 +389,7 @@ class Downloader:
     def run(self) -> None:
         """Main loop: fetch_queue() → download each book in order."""
         start = time.time()
-        downloaded: list[str] = []
+        reports: list[dict] = []
 
         try:
             queue = self.fetch_queue()
@@ -320,25 +402,38 @@ class Downloader:
 
         if not queue:
             logger.info('Nothing to download.')
-            elapsed = time.strftime('%H:%M:%S', time.gmtime(time.time() - start))
-            notifier_module.send_success(self._config, [], elapsed)
             return
 
-        for url in queue:
+        for i, url in enumerate(queue):
             try:
-                display = self.download_book(url)
-                downloaded.append(display)
+                report = self.download_book(url)
+                reports.append(report)
             except Exception as e:
                 tb = traceback.format_exc()
                 logger.error('Error downloading %s: %s\n%s', url, e, tb)
                 notifier_module.send_error(self._config, url, None, str(e), tb)
                 return  # halt on first failure
 
+            if i < len(queue) - 1:
+                logger.info('Waiting %gs before next book...', self._config.book_wait)
+                time.sleep(self._config.book_wait)
+
         elapsed = time.strftime('%H:%M:%S', time.gmtime(time.time() - start))
-        notifier_module.send_success(self._config, downloaded, elapsed)
-        logger.info('Run complete. %d book(s). Elapsed: %s', len(downloaded), elapsed)
+        notifier_module.send_success(self._config, reports, elapsed)
+        logger.info('Run complete. %d book(s). Elapsed: %s', len(reports), elapsed)
 
 
 def _safe_dirname(name: str) -> str:
     """Sanitize a title string for use as a temp directory name."""
     return re.sub(r'[\\/*?:"<>|]', '_', name)[:100]
+
+
+def _png_dimensions(path: str) -> tuple[int, int]:
+    """Read width and height from a PNG file header (no extra dependencies)."""
+    with open(path, 'rb') as f:
+        f.read(8)   # PNG signature
+        f.read(4)   # IHDR chunk length
+        f.read(4)   # 'IHDR'
+        width = struct.unpack('>I', f.read(4))[0]
+        height = struct.unpack('>I', f.read(4))[0]
+    return width, height

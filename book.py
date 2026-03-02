@@ -17,6 +17,8 @@ class Book:
 
     # Routing flags (set by organizer)
     is_cover: bool = False           # True when pages <= 4
+    multi_collection: bool = False   # True when book belongs to >1 FAKKU collection
+    missing_volumes: bool = False    # True when preceding series volumes cannot be found
 
     def is_series(self) -> bool:
         return self.series_name is not None

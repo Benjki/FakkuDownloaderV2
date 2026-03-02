@@ -36,15 +36,29 @@ def save_cookies(path: str, cookies: list[dict]) -> None:
         pickle.dump(cookies, f)
 
 
-def cookies_are_valid(cookies: list[dict], threshold_days: int = 7) -> bool:
-    """Return True if the fakku_otpa cookie expires more than threshold_days from now."""
+
+def _cookies_past_expiry(cookies: list[dict]) -> bool:
+    """Return True if the fakku_otpa cookie has a known expiry that has already passed."""
     now = datetime.now(tz=timezone.utc).timestamp()
     for c in cookies:
         if c.get('name') == 'fakku_otpa':
-            exp = c.get('expires', 0)
-            if exp and (exp - now) > threshold_days * 86400:
+            exp = c.get('expires', -1)
+            if exp != -1 and exp > 0 and now >= exp:
                 return True
     return False
+
+
+def _session_is_valid(browser: Browser) -> bool:
+    """Inject cookies then navigate to a members-only page to confirm the session works."""
+    try:
+        browser.page.goto(
+            'https://www.fakku.net/account',
+            wait_until='domcontentloaded',
+            timeout=15000,
+        )
+        return '/login' not in browser.page.url
+    except Exception:
+        return False
 
 
 def login(browser: Browser, config: Config) -> list[dict]:
@@ -68,7 +82,7 @@ def login(browser: Browser, config: Config) -> list[dict]:
     try:
         page.fill('input[name="email"]', config.fakku_username)
         page.fill('input[name="password"]', config.fakku_password)
-        page.locator('form button:has-text("Login")').click()
+        page.locator('input[name="password"]').press('Enter')
     except Exception as e:
         raise AuthError(f'Failed to fill login form: {e}') from e
 
@@ -102,30 +116,22 @@ def login(browser: Browser, config: Config) -> list[dict]:
 def ensure_authenticated(browser: Browser, config: Config, notifier) -> None:
     """
     Called at the start of every run.
-    - If valid cookies exist (>7 days until expiry): inject them, done.
-    - If near-expiry (<=14 days): inject AND send a warning email.
-    - If missing/expired: run TOTP login, save new cookies.
+    1. If cookies file has cookies AND they haven't passed their expiry: inject and
+       verify the session against /account.  If the live check passes, proceed.
+    2. Any other case (no file, empty, past expiry, or live check fails): run full
+       TOTP login and save fresh cookies.
+    3. If cookies are expiring within 14 days, send a warning email after logging in.
     """
     cookies = load_cookies(config.cookies_file)
 
-    if cookies is not None:
-        if cookies_are_valid(cookies, threshold_days=7):
-            browser.load_cookies(cookies)
-            # Warn if expiring within 14 days
-            if not cookies_are_valid(cookies, threshold_days=14):
-                notifier.send_warning(
-                    config,
-                    subject='Cookies expiring soon',
-                    body=(
-                        'FAKKU session cookies will expire within 14 days. '
-                        'A fresh login will occur automatically on the next expiry.'
-                    ),
-                )
+    if cookies and not _cookies_past_expiry(cookies):
+        browser.load_cookies(cookies)
+        if _session_is_valid(browser):
             logger.info('Cookies loaded from file — login skipped.')
             return
+        logger.info('Session check failed — cookies may have been invalidated remotely.')
 
-    # Missing, corrupt, or expired → full TOTP login
-    logger.info('Cookies missing or expired — running TOTP login...')
+    logger.info('Running TOTP login...')
     new_cookies = login(browser, config)
     save_cookies(config.cookies_file, new_cookies)
     browser.load_cookies(new_cookies)

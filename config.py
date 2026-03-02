@@ -30,9 +30,27 @@ class Config:
     # Tuning
     page_timeout: float
     page_wait: float
+    book_wait: float           # seconds to pause between books
     min_image_size_kb: int
+    # List of acceptable WxH dimensions; empty = accept any size
+    allowed_image_dimensions: list[tuple[int, int]]
     max_retry: int
     chrome_offset: int | None  # None means auto-detect at runtime
+
+
+def _parse_dimensions(raw: str) -> list[tuple[int, int]]:
+    """Parse 'WxH,WxH,...' into a list of (width, height) tuples. Empty string → []."""
+    result = []
+    for part in raw.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            w, h = part.lower().split('x')
+            result.append((int(w), int(h)))
+        except ValueError:
+            sys.exit(f"[config] Invalid dimension '{part}' in ALLOWED_IMAGE_DIMENSIONS — expected WxH (e.g. 1360x1920)")
+    return result
 
 
 def load_config() -> Config:
@@ -66,7 +84,9 @@ def load_config() -> Config:
         temp_dir=os.getenv('TEMP_DIR', './tmp'),
         page_timeout=float(os.getenv('PAGE_TIMEOUT', '15')),
         page_wait=float(os.getenv('PAGE_WAIT', '5')),
+        book_wait=float(os.getenv('BOOK_WAIT', '30')),
         min_image_size_kb=int(os.getenv('MIN_IMAGE_SIZE_KB', '50')),
+        allowed_image_dimensions=_parse_dimensions(os.getenv('ALLOWED_IMAGE_DIMENSIONS', '')),
         max_retry=int(os.getenv('MAX_RETRY', '3')),
         chrome_offset=int(chrome_offset_raw) if chrome_offset_raw else None,
     )

@@ -106,11 +106,11 @@ class TestFirstLetter:
     def test_returns_upper_alpha(self):
         assert first_letter('Attack on Titan') == 'A'
 
-    def test_digit_first_returns_hash(self):
-        assert first_letter('3D Custom Girl') == '#'
+    def test_digit_first_returns_0_9(self):
+        assert first_letter('3D Custom Girl') == '0-9'
 
-    def test_empty_returns_hash(self):
-        assert first_letter('') == '#'
+    def test_empty_returns_0_9(self):
+        assert first_letter('') == '0-9'
 
     def test_symbol_prefix_skips_to_alpha(self):
         assert first_letter('!Zoey') == 'Z'

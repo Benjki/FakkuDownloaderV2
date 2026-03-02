@@ -22,14 +22,62 @@ def _send(config: Config, subject: str, body: str) -> None:
         print(f'[notifier] Failed to send email: {e}')
 
 
-def send_success(config: Config, books_downloaded: list[str], elapsed: str) -> None:
-    body_lines = [
-        f'Run complete. {len(books_downloaded)} book(s) downloaded.',
+def send_success(config: Config, reports: list[dict], elapsed: str) -> None:
+    downloaded = [r for r in reports if not r.get('skipped')]
+    skipped    = [r for r in reports if r.get('skipped')]
+
+    subject = f'Run complete: {len(downloaded)} downloaded'
+    if skipped:
+        subject += f', {len(skipped)} skipped'
+
+    lines = [
+        f'Run complete. {len(downloaded)} book(s) downloaded, {len(skipped)} skipped.',
         f'Elapsed time: {elapsed}',
-        '',
-        'Books:',
-    ] + [f'  - {b}' for b in books_downloaded]
-    _send(config, f'Run complete: {len(books_downloaded)} book(s)', '\n'.join(body_lines))
+    ]
+
+    if downloaded:
+        lines += ['', '=' * 60, 'DOWNLOADED', '=' * 60]
+        for r in downloaded:
+            lines.append('')
+            lines.append(f'  {r["display_name"]}')
+            lines.append(f'  URL:    {r["url"]}')
+            lines.append(f'  Pages:  {r["pages"]}')
+
+            routing = r['routing']
+            if routing == 'multi_collection':
+                lines.append('  Type:   *** MULTIPLE COLLECTIONS — placed in TO FIX MANUALLY/')
+                lines.append('          Assign to the correct series manually.')
+            elif routing == 'missing_volumes':
+                missing = r.get('missing_vol_nums', [])
+                vols = ', '.join(f'vol.{k}' for k in missing)
+                lines.append(f'  Type:   *** MISSING PRECEDING VOLUMES ({vols}) — placed in TO FIX MANUALLY/')
+                lines.append(f'  Series: {r["series_name"]} vol.{r["volume_number"]}')
+                lines.append('          Find/download the missing volumes, then move this file manually.')
+            elif routing == 'cover':
+                lines.append('  Type:   Cover (≤4 pages) → placed in Covers/')
+            elif routing == 'series':
+                sdir = r['series_dir']
+                created = r.get('series_dir_created')
+                created_note = ' (new folder)' if created else ' (existing folder)'
+                lines.append(f'  Type:   Series — {r["series_name"]} vol.{r["volume_number"]}')
+                lines.append(f'  Folder: {sdir}{created_note}')
+            else:
+                lines.append(f'  Type:   One-shot → placed in {r["series_dir"]}')
+
+            lines.append(f'  File:   {r["cbz_filename"]}')
+
+            move = r.get('oneshot_move')
+            if move:
+                lines.append(f'  Moved vol.1 from one-shots:')
+                lines.append(f'    Before: {move["from"]}')
+                lines.append(f'    After:  {move["to"]}')
+
+    if skipped:
+        lines += ['', '=' * 60, 'SKIPPED', '=' * 60]
+        for r in skipped:
+            lines.append(f'  {r["url"]}  [{r.get("skip_reason", "unknown")}]')
+
+    _send(config, subject, '\n'.join(lines))
 
 
 def send_error(config: Config, url: str, page: int | None, error: str, trace: str) -> None:
