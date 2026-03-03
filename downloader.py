@@ -655,7 +655,7 @@ class Downloader:
             except Exception as e:
                 tb = traceback.format_exc()
                 logger.error('Error downloading %s: %s\n%s', url, e, tb)
-                notifier_module.send_error(self._config, url, None, str(e), tb)
+                notifier_module.send_error(self._config, url, None, str(e), tb, reports=reports)
                 return  # halt on first failure
 
             if i < len(queue) - 1:

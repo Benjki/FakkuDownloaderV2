@@ -348,9 +348,19 @@ def send_success(config: Config, reports: list[dict], elapsed: str, dry_run: boo
     _send(config, subject, '\n'.join(lines), html=html)
 
 
-def send_error(config: Config, url: str, page: int | None, error: str, trace: str) -> None:
+def send_error(
+    config: Config,
+    url: str,
+    page: int | None,
+    error: str,
+    trace: str,
+    reports: list[dict] | None = None,
+) -> None:
     location = f'page {page}' if page else 'metadata stage'
-    body = '\n'.join([
+    completed = [r for r in (reports or []) if not r.get('skipped')]
+    skipped   = [r for r in (reports or []) if r.get('skipped')]
+
+    body_lines = [
         'Run halted due to an unrecoverable error.',
         '',
         f'URL:      {url}',
@@ -359,7 +369,25 @@ def send_error(config: Config, url: str, page: int | None, error: str, trace: st
         '',
         'Traceback:',
         trace,
-    ])
+    ]
+    if completed:
+        body_lines += ['', '=' * 60, f'COMPLETED BEFORE ERROR ({len(completed)} book(s))', '=' * 60]
+        for r in completed:
+            body_lines.append(f'  {r["display_name"]}  →  {r.get("cbz_path", "")}')
+
+    section_head_style = (
+        'font-family:sans-serif;font-size:15px;font-weight:700;'
+        'color:#374151;margin:20px 0 6px;border-bottom:1px solid #e5e7eb;padding-bottom:4px;'
+    )
+    completed_html = ''
+    if completed:
+        cards = '\n'.join(_book_card(r) for r in completed)
+        completed_html = (
+            f'<div style="{section_head_style}">'
+            f'Completed before error ({len(completed)} book(s))</div>'
+            f'{cards}'
+        )
+
     html = f"""<!DOCTYPE html>
 <html>
 <body style="margin:0;padding:0;background:#f3f4f6;">
@@ -385,6 +413,7 @@ def send_error(config: Config, url: str, page: int | None, error: str, trace: st
           <pre style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px;
                       padding:12px;font-size:12px;overflow-x:auto;
                       white-space:pre-wrap;word-break:break-all;">{trace}</pre>
+          {completed_html}
         </td>
       </tr>
     </table>
@@ -392,7 +421,7 @@ def send_error(config: Config, url: str, page: int | None, error: str, trace: st
 </table>
 </body>
 </html>"""
-    _send(config, 'ERROR: Run halted', body, html=html)
+    _send(config, 'ERROR: Run halted', '\n'.join(body_lines), html=html)
 
 
 def send_warning(config: Config, subject: str, body: str) -> None:
