@@ -262,10 +262,14 @@ class Downloader:
         cbz_path = str(Path(series_dir_abs) / filename)
 
         conflicting_path = None
+        zip_alt = Path(cbz_path).with_suffix('.zip')
         if Path(cbz_path).exists():
             conflicting_path = cbz_path
+        elif zip_alt.exists():
+            conflicting_path = str(zip_alt)
+        if conflicting_path:
             logger.warning(
-                'File already exists at "%s" — routing to "TO FIX MANUALLY".', cbz_path
+                'File already exists at "%s" — routing to "TO FIX MANUALLY".', conflicting_path
             )
             book.file_conflict = True
             rel_dir = route_book(book)
@@ -544,8 +548,12 @@ class Downloader:
         filename = build_filename(book)
         cbz_path = str(Path(series_dir_abs) / filename)
         conflicting_path = None
+        zip_alt = Path(cbz_path).with_suffix('.zip')
         if Path(cbz_path).exists():
             conflicting_path = cbz_path
+        elif zip_alt.exists():
+            conflicting_path = str(zip_alt)
+        if conflicting_path:
             book.file_conflict = True
             rel_dir = route_book(book)
             series_dir_abs = Path(config.storage_primary) / rel_dir

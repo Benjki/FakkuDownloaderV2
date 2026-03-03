@@ -359,7 +359,7 @@ def check_and_move_oneshot(
     author_term = replace_illegal(author).lower()
 
     candidates = [
-        f for f in oneshots_dir.glob('*.cbz')
+        f for f in list(oneshots_dir.glob('*.cbz')) + list(oneshots_dir.glob('*.zip'))
         if vol1_stem in f.stem.lower() and author_term in f.stem.lower()
     ]
 
