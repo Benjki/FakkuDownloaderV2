@@ -31,18 +31,17 @@ class Browser:
         )
         self._context = self._browser.new_context(
             viewport={'width': 1440, 'height': 2560},
-            locale='en-US',   # sets Accept-Language header + navigator.language/languages
-            # No user_agent override — let Chrome report its real installed version
+            locale='en-US',
+            user_agent=(
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/133.0.0.0 Safari/537.36'
+            ),
         )
-        # Mask the three properties most commonly checked by bot-detection scripts.
-        # This init script runs before any page or frame script on every navigation.
         self._context.add_init_script("""
-            // Playwright sets navigator.webdriver = true even on real Chrome
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            // Ensure plugins is non-empty (headless can still zero it out)
             if (!navigator.plugins || navigator.plugins.length === 0)
                 Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
-            // Ensure window.chrome.runtime exists (absent in some headless contexts)
             if (!window.chrome) window.chrome = {};
             if (!window.chrome.runtime) window.chrome.runtime = {};
         """)

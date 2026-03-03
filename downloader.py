@@ -58,9 +58,19 @@ class Downloader:
         page = self._browser.page
 
         page.goto(config.fakku_collection_url, wait_until='domcontentloaded')
-        time.sleep(5 + random.uniform(0, 3))
+        # Collection items are injected by JavaScript after the initial HTML loads.
+        # Wait for at least one book div to appear before reading page content.
+        try:
+            page.wait_for_selector('div.flex.mt-3', timeout=20000)
+        except Exception:
+            pass  # Empty collection or slow load — proceed with whatever is available
+        time.sleep(1)
 
         html = page.content()
+        actual_url = page.url
+        if actual_url.rstrip('/') != config.fakku_collection_url.rstrip('/'):
+            logger.warning('Collection page redirected: %s -> %s', config.fakku_collection_url, actual_url)
+        logger.info('Collection page loaded (url=%s html_len=%d)', actual_url, len(html))
         soup = BeautifulSoup(html, 'lxml')
 
         # Determine total page count
@@ -92,13 +102,19 @@ class Downloader:
                     f'{config.fakku_collection_url}/page/{pg}',
                     wait_until='domcontentloaded',
                 )
-                time.sleep(5 + random.uniform(0, 3))
+                try:
+                    page.wait_for_selector('div.flex.mt-3', timeout=20000)
+                except Exception:
+                    pass
+                time.sleep(1)
                 html = page.content()
                 soup = BeautifulSoup(html, 'lxml')
 
-            for div in soup.find_all(
+            divs = soup.find_all(
                 'div', class_=lambda c: c and 'flex' in c and 'mt-3' in c
-            ):
+            )
+            logger.info('Page %d: found %d book divs.', pg, len(divs))
+            for div in divs:
                 a = div.find('a', href=True)
                 if a:
                     all_urls.append(normalise_url(BASE_URL + a['href']))
