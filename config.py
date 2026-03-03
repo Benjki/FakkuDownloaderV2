@@ -83,7 +83,7 @@ def load_config() -> Config:
         cookies_file=os.getenv('COOKIES_FILE', './cookies.pickle'),
         temp_dir=os.getenv('TEMP_DIR', './tmp'),
         page_timeout=float(os.getenv('PAGE_TIMEOUT', '15')),
-        page_wait=float(os.getenv('PAGE_WAIT', '5')),
+        page_wait=float(os.getenv('PAGE_WAIT', '15')),
         book_wait=float(os.getenv('BOOK_WAIT', '30')),
         min_image_size_kb=int(os.getenv('MIN_IMAGE_SIZE_KB', '50')),
         allowed_image_dimensions=_parse_dimensions(os.getenv('ALLOWED_IMAGE_DIMENSIONS', '')),

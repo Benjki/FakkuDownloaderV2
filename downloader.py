@@ -1,6 +1,7 @@
 """Queue resolution and per-book download orchestration."""
 
 import logging
+import random
 import re
 import shutil
 import struct
@@ -57,7 +58,7 @@ class Downloader:
         page = self._browser.page
 
         page.goto(config.fakku_collection_url, wait_until='domcontentloaded')
-        time.sleep(3)
+        time.sleep(5 + random.uniform(0, 3))
 
         html = page.content()
         soup = BeautifulSoup(html, 'lxml')
@@ -91,7 +92,7 @@ class Downloader:
                     f'{config.fakku_collection_url}/page/{pg}',
                     wait_until='domcontentloaded',
                 )
-                time.sleep(2)
+                time.sleep(5 + random.uniform(0, 3))
                 html = page.content()
                 soup = BeautifulSoup(html, 'lxml')
 
@@ -130,7 +131,7 @@ class Downloader:
 
         # 1. Fetch book info page
         page.goto(url, wait_until='domcontentloaded')
-        time.sleep(2)
+        time.sleep(5)
         html = page.content()
 
         # 2. Ownership check
@@ -343,12 +344,31 @@ class Downloader:
                         }}"""
                     )
 
-                # Wait for the page to fully render before capturing
-                time.sleep(config.page_wait)
+                # Resize the viewport to the canvas dimensions before sleeping.
+                # V1 did this on every page; the changing window size looks like
+                # real browser behaviour and avoids a static-viewport fingerprint.
+                canvas_idx = max(0, (layers or 1) - 2)
+                canvas_dims = page.evaluate(
+                    f"""() => {{
+                        const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
+                        if (!iframe || !iframe.contentDocument) return null;
+                        const c = iframe.contentDocument.getElementsByTagName('canvas')[{canvas_idx}];
+                        return c ? {{width: c.width, height: c.height}} : null;
+                    }}"""
+                )
+                if canvas_dims and canvas_dims.get('width') and canvas_dims.get('height'):
+                    offset = self._browser.get_chrome_offset()
+                    page.set_viewport_size({
+                        'width': canvas_dims['width'],
+                        'height': canvas_dims['height'] + offset,
+                    })
+
+                # Wait for the page to fully render before capturing.
+                # Jitter avoids perfectly mechanical timing that rate limiters flag.
+                time.sleep(config.page_wait + random.uniform(0, 3))
 
                 # Screenshot the canvas element directly — this captures only the
                 # manga page pixels with no reader UI padding or surrounding whitespace.
-                canvas_idx = max(0, (layers or 1) - 2)
                 canvas_locator = frame_locator.locator('canvas').nth(canvas_idx)
                 canvas_locator.screenshot(path=dest)
 
@@ -418,7 +438,7 @@ class Downloader:
 
         # 1. Fetch book info page
         page.goto(url, wait_until='domcontentloaded')
-        time.sleep(2)
+        time.sleep(5)
         html = page.content()
 
         # 2. Ownership check
@@ -624,7 +644,7 @@ class Downloader:
 
             if i < len(queue) - 1:
                 logger.info('Waiting %gs before next book...', self._config.book_wait)
-                time.sleep(self._config.book_wait)
+                time.sleep(self._config.book_wait + random.uniform(0, 10))
 
         elapsed = time.strftime('%H:%M:%S', time.gmtime(time.time() - start))
         notifier_module.send_success(self._config, reports, elapsed)

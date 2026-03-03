@@ -3,12 +3,6 @@
 from playwright.sync_api import sync_playwright, Page, BrowserContext
 from config import Config
 
-USER_AGENT = (
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-    'AppleWebKit/537.36 (KHTML, like Gecko) '
-    'Chrome/120.0.0.0 Safari/537.36'
-)
-
 
 class Browser:
     def __init__(self, config: Config):
@@ -22,14 +16,36 @@ class Browser:
     def start(self) -> None:
         """Launch Chromium with required flags. Must be called before any other method."""
         self._playwright = sync_playwright().start()
+        # Use the system-installed Chrome binary instead of Playwright's bundled
+        # Chromium. Real Chrome has the correct TLS fingerprint, real plugin list,
+        # and a user-agent that automatically matches the installed version —
+        # eliminating the most reliable binary-level bot-detection signals.
         self._browser = self._playwright.chromium.launch(
+            channel='chrome',
             headless=True,
-            args=['--no-sandbox', '--disable-dev-shm-usage'],
+            args=[
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled',
+            ],
         )
         self._context = self._browser.new_context(
             viewport={'width': 1440, 'height': 2560},
-            user_agent=USER_AGENT,
+            locale='en-US',   # sets Accept-Language header + navigator.language/languages
+            # No user_agent override — let Chrome report its real installed version
         )
+        # Mask the three properties most commonly checked by bot-detection scripts.
+        # This init script runs before any page or frame script on every navigation.
+        self._context.add_init_script("""
+            // Playwright sets navigator.webdriver = true even on real Chrome
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            // Ensure plugins is non-empty (headless can still zero it out)
+            if (!navigator.plugins || navigator.plugins.length === 0)
+                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
+            // Ensure window.chrome.runtime exists (absent in some headless contexts)
+            if (!window.chrome) window.chrome = {};
+            if (!window.chrome.runtime) window.chrome.runtime = {};
+        """)
         self.page = self._context.new_page()
         self._setup_localstorage()
 
