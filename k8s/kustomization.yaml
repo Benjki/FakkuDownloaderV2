@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: fakkudownloader-v2
+
+resources:
+  - cronjob.yaml
+  - pvc.yaml
+  - secret.yaml
+  - docker-secret.yaml

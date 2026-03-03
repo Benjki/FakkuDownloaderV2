@@ -1,0 +1,109 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: fakkudownloader-v2
+  namespace: fakkudownloader-v2
+spec:
+  schedule: "45 2 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          imagePullSecrets:
+            - name: dockerhub-secret
+          restartPolicy: Never
+          containers:
+            - name: fakku-downloader
+              image: benjki1/purchasetracker:v98.0.00055da30c56d9d96a315b9c3b7e473d55f961fe
+              env:
+                - name: FAKKU_COLLECTION_URL
+                  value: "https://www.fakku.net/users/benjki-2057710/collections/to-dwnl"
+                - name: STORAGE_PRIMARY
+                  value: "/library/Fakku"
+                - name: DONE_FILE
+                  value: "/queue/done.txt"
+                - name: COOKIES_FILE
+                  value: "/queue/cookies.pickle"
+                - name: TEMP_DIR
+                  value: "/queue/tmp"
+                - name: PAGE_TIMEOUT
+                  value: "15"
+                - name: PAGE_WAIT
+                  value: "15"
+                - name: BOOK_WAIT
+                  value: "30"
+                - name: MIN_IMAGE_SIZE_KB
+                  value: "50"
+                - name: MAX_RETRY
+                  value: "3"
+                - name: ALLOWED_IMAGE_DIMENSIONS
+                  value: "1360x1920, 1337x1920"
+
+                - name: FAKKU_USERNAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: fakkudownloader-v2-secrets
+                      key: username
+                - name: FAKKU_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: fakkudownloader-v2-secrets
+                      key: password
+                - name: FAKKU_TOTP_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: fakkudownloader-v2-secrets
+                      key: totp
+                - name: SMTP_HOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: fakkudownloader-v2-secrets
+                      key: smtp-host
+                - name: SMTP_PORT
+                  valueFrom:
+                    secretKeyRef:
+                      name: fakkudownloader-v2-secrets
+                      key: smtp-port
+                - name: SMTP_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: fakkudownloader-v2-secrets
+                      key: smtp-username
+                - name: SMTP_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: fakkudownloader-v2-secrets
+                      key: smtp-password
+                - name: SMTP_FROM
+                  valueFrom:
+                    secretKeyRef:
+                      name: fakkudownloader-v2-secrets
+                      key: smtp-from
+                - name: SMTP_TO
+                  valueFrom:
+                    secretKeyRef:
+                      name: fakkudownloader-v2-secrets
+                      key: smtp-to
+
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "512Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "1Gi"
+              volumeMounts:
+                - name: queue
+                  mountPath: /queue
+                - name: library
+                  mountPath: /library
+          volumes:
+            - name: queue
+              persistentVolumeClaim:
+                claimName: fakkudownloader-queue
+            - name: library
+              hostPath:
+                path: /mnt/media-storage/komga-data
+                type: Directory
