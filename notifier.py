@@ -95,6 +95,13 @@ def _book_card(r: dict) -> str:
 
     rows.append(f'<div><b>File:</b> {r["cbz_filename"]}</div>')
 
+    retries = r.get('page_retries', 0)
+    if retries:
+        rows.append(
+            f'<div style="color:#f97316;font-weight:600;">&#9888; {retries} page '
+            f'{"retry" if retries == 1 else "retries"} (timeout)</div>'
+        )
+
     if not r.get('author'):
         rows.append(
             '<div style="color:#ef4444;">&#9888; No author found — '
@@ -130,9 +137,13 @@ def _build_success_html(
         if r['routing'] in ('multi_collection', 'missing_volumes', 'file_conflict')
     )
 
+    total_retries = sum(r.get('page_retries', 0) for r in downloaded)
+
     banner_parts = [_badge(f'{len(downloaded)} downloaded', '#22c55e')]
     if needs_attention:
         banner_parts.append(_badge(f'{needs_attention} needs attention', '#ef4444'))
+    if total_retries:
+        banner_parts.append(_badge(f'{total_retries} page {"retry" if total_retries == 1 else "retries"}', '#f97316'))
     if not_owned:
         banner_parts.append(_badge(f'{len(not_owned)} not owned', '#f97316'))
     if other_skipped:
@@ -323,6 +334,10 @@ def send_success(config: Config, reports: list[dict], elapsed: str, dry_run: boo
                 lines.append(f'  Type:   One-shot → placed in {r["series_dir"]}')
 
             lines.append(f'  File:   {r["cbz_filename"]}')
+
+            retries = r.get('page_retries', 0)
+            if retries:
+                lines.append(f'  Retries: *** {retries} page timeout(s)')
 
             if not r.get('author'):
                 lines.append('  Author: *** NOT FOUND — filename has no [Author] tag')

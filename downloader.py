@@ -240,13 +240,14 @@ class Downloader:
         create_folder_if_missing(temp_dir)
 
         # 9. Screenshot each page (skip pages already captured in a previous run)
+        page_retries = 0
         for page_num in range(1, pages + 1):
             dest = str(Path(temp_dir) / f'{page_num}.png')
             if self._page_already_done(dest):
                 logger.info('Page %d/%d (cached)', page_num, pages)
                 continue
             logger.info('Page %d/%d', page_num, pages)
-            self.download_page(url, dest, page_num)
+            page_retries += self.download_page(url, dest, page_num)
 
         # 10. Page count validation (all pages must be present)
         actual = len(list(Path(temp_dir).glob('*.png')))
@@ -280,6 +281,8 @@ class Downloader:
         append_done(config.done_file, url)
         self._done.add(normalise_url(url))
 
+        if page_retries:
+            logger.info('Page retries for "%s": %d', title, page_retries)
         logger.info('Done: %s -> %s', book.display_name(), cbz_path)
         if multi_collection:
             routing = 'multi_collection'
@@ -311,16 +314,19 @@ class Downloader:
             'cbz_path': cbz_path,
             'oneshot_move': oneshot_move,
             'conflicting_path': conflicting_path,
+            'page_retries': page_retries,
         }
 
-    def download_page(self, book_url: str, dest: str, page_num: int) -> None:
+    def download_page(self, book_url: str, dest: str, page_num: int) -> int:
         """
         Screenshot a single reader page with retry logic.
         Attempts up to config.max_retry times with exponential backoff.
+        Returns the number of failed attempts before success (0 = first try worked).
         """
         config = self._config
         page = self._browser.page
         delays = [2, 4, 8]
+        failed = 0
 
         for attempt in range(config.max_retry):
             try:
@@ -405,9 +411,10 @@ class Downloader:
                             f'(allowed: {allowed})'
                         )
 
-                return
+                return failed
 
             except Exception as e:
+                failed += 1
                 logger.warning('Page %d attempt %d/%d failed: %s', page_num, attempt + 1, config.max_retry, e)
                 if attempt < len(delays):
                     time.sleep(delays[attempt])
