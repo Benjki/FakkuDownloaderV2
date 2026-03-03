@@ -135,9 +135,7 @@ class Downloader:
 
         # 2. Ownership check
         if not check_ownership(html):
-            logger.warning('Not owned — skipping: %s', url)
-            append_done(config.done_file, url)
-            self._done.add(normalise_url(url))
+            logger.warning('Not owned — skipping (not added to done.txt): %s', url)
             return {'display_name': url, 'skipped': True, 'skip_reason': 'not owned', 'url': url}
 
         # 3. Extract metadata
@@ -233,9 +231,9 @@ class Downloader:
             logger.info('Page %d/%d', page_num, pages)
             self.download_page(url, dest, page_num)
 
-        # 10. Page count validation (at least 80% present)
+        # 10. Page count validation (all pages must be present)
         actual = len(list(Path(temp_dir).glob('*.png')))
-        if actual < pages * 0.8:
+        if actual < pages:
             raise ValueError(
                 f'Page count mismatch for "{title}": expected {pages}, got {actual}'
             )
@@ -244,7 +242,19 @@ class Downloader:
         filename = build_filename(book)
         create_folder_if_missing(series_dir_abs)
         cbz_path = str(Path(series_dir_abs) / filename)
-        pack_cbz(temp_dir, cbz_path, tags)
+
+        conflicting_path = None
+        if Path(cbz_path).exists():
+            conflicting_path = cbz_path
+            logger.warning(
+                'File already exists at "%s" — routing to "TO FIX MANUALLY".', cbz_path
+            )
+            book.file_conflict = True
+            rel_dir = route_book(book)
+            series_dir_abs = Path(config.storage_primary) / rel_dir
+            cbz_path = str(Path(series_dir_abs) / filename)
+
+        pack_cbz(temp_dir, cbz_path, book)
 
         # 12. Clean up temp directory
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -258,6 +268,8 @@ class Downloader:
             routing = 'multi_collection'
         elif book.missing_volumes:
             routing = 'missing_volumes'
+        elif book.file_conflict:
+            routing = 'file_conflict'
         elif is_cover:
             routing = 'cover'
         elif series_name:
@@ -281,6 +293,7 @@ class Downloader:
             'cbz_filename': filename,
             'cbz_path': cbz_path,
             'oneshot_move': oneshot_move,
+            'conflicting_path': conflicting_path,
         }
 
     def download_page(self, book_url: str, dest: str, page_num: int) -> None:
@@ -392,6 +405,194 @@ class Downloader:
         for c in self._browser.get_cookies():
             session.cookies.set(c['name'], c['value'], domain=c.get('domain', ''))
         return session
+
+    def dry_run_book(self, url: str) -> dict:
+        """
+        Simulate the full per-book flow without downloading or writing any files.
+        Performs steps 1-7 (fetch, ownership, metadata, series detection, routing,
+        oneshot-move check, missing-volume check, file-conflict check) identically
+        to download_book, but skips screenshots, CBZ packing, and done.txt updates.
+        """
+        config = self._config
+        page = self._browser.page
+
+        # 1. Fetch book info page
+        page.goto(url, wait_until='domcontentloaded')
+        time.sleep(2)
+        html = page.content()
+
+        # 2. Ownership check
+        if not check_ownership(html):
+            logger.info('[DRY RUN] Not owned — would skip: %s', url)
+            return {'display_name': url, 'skipped': True, 'skip_reason': 'not owned', 'url': url}
+
+        # 3. Extract metadata
+        meta = extract_metadata(html)
+        title = meta['title']
+        author = meta['author']
+        pages = meta['pages']
+        tags = meta['tags']
+
+        # 4. Routing flags
+        is_cover = pages <= 4
+
+        # 5. Series detection
+        series_name, volume_number, short_title = None, None, None
+        multi_collection = False
+        if not is_cover:
+            session = self._make_requests_session()
+            raw_series, volume_number, _ = detect_series(html, url, session)
+            if raw_series == '__multi_collection__':
+                multi_collection = True
+                volume_number = None
+            elif raw_series:
+                series_name = raw_series
+                short_title = compute_short_title(title, series_name)
+
+        # 6. Build Book dataclass
+        book = Book(
+            title=title,
+            author=author,
+            pages=pages,
+            tags=tags,
+            source_url=normalise_url(url),
+            series_name=series_name,
+            volume_number=volume_number,
+            short_title=short_title,
+            is_cover=is_cover,
+            multi_collection=multi_collection,
+        )
+
+        # 7. Retroactive oneshot move check + missing-volume check (read-only)
+        rel_dir = route_book(book)
+        series_dir_abs = Path(config.storage_primary) / rel_dir
+        series_dir_created = not series_dir_abs.exists()
+        oneshot_move = None
+        missing_vol_nums: list[int] = []
+
+        if book.is_series() and book.volume_number and book.volume_number >= 2:
+            series_safe = replace_illegal(series_name).lower()
+
+            vol1_present = series_dir_abs.exists() and any(
+                f.name.lower().startswith(series_safe + ' vol.1')
+                for f in series_dir_abs.glob('*.cbz')
+            )
+            if not vol1_present:
+                oneshot_move = check_and_move_oneshot(
+                    series_name, author, series_name, config.storage_primary, str(rel_dir),
+                    dry_run=True,
+                )
+
+            for k in range(1, book.volume_number):
+                k_present = series_dir_abs.exists() and any(
+                    f.name.lower().startswith(f'{series_safe} vol.{k}')
+                    for f in series_dir_abs.glob('*.cbz')
+                )
+                if not k_present:
+                    missing_vol_nums.append(k)
+
+            if missing_vol_nums:
+                book.missing_volumes = True
+                rel_dir = route_book(book)
+                series_dir_abs = Path(config.storage_primary) / rel_dir
+                series_dir_created = not series_dir_abs.exists()
+
+        # File conflict check
+        filename = build_filename(book)
+        cbz_path = str(Path(series_dir_abs) / filename)
+        conflicting_path = None
+        if Path(cbz_path).exists():
+            conflicting_path = cbz_path
+            book.file_conflict = True
+            rel_dir = route_book(book)
+            series_dir_abs = Path(config.storage_primary) / rel_dir
+            cbz_path = str(Path(series_dir_abs) / filename)
+
+        # Steps 8-13 skipped (no screenshots, no CBZ, no done.txt update)
+
+        if multi_collection:
+            routing = 'multi_collection'
+        elif book.missing_volumes:
+            routing = 'missing_volumes'
+        elif book.file_conflict:
+            routing = 'file_conflict'
+        elif is_cover:
+            routing = 'cover'
+        elif series_name:
+            routing = 'series'
+        else:
+            routing = 'oneshot'
+
+        label = routing.upper().replace('_', ' ')
+        logger.info('[DRY RUN] [%-18s] %s -> %s', label, book.display_name(), cbz_path)
+        if missing_vol_nums:
+            vols = ', '.join(f'vol.{k}' for k in missing_vol_nums)
+            logger.warning('[DRY RUN]   Missing preceding volumes: %s', vols)
+        if conflicting_path:
+            logger.warning('[DRY RUN]   File conflict with: %s', conflicting_path)
+        if oneshot_move:
+            logger.info('[DRY RUN]   Would move vol.1: %s -> %s',
+                        oneshot_move['from'], oneshot_move['to'])
+
+        return {
+            'display_name': book.display_name(),
+            'skipped': False,
+            'url': normalise_url(url),
+            'title': title,
+            'author': author,
+            'pages': pages,
+            'routing': routing,
+            'series_name': series_name,
+            'volume_number': volume_number,
+            'missing_vol_nums': missing_vol_nums,
+            'series_dir': str(rel_dir),
+            'series_dir_created': series_dir_created if series_name else None,
+            'cbz_filename': filename,
+            'cbz_path': cbz_path,
+            'oneshot_move': oneshot_move,
+            'conflicting_path': conflicting_path,
+        }
+
+    def run_dry_run(self) -> None:
+        """Simulate a full run: fetch queue, check each book, print plan. Nothing is written."""
+        start = time.time()
+
+        try:
+            queue = self.fetch_queue()
+        except PaginationError as e:
+            logger.error('[DRY RUN] Pagination error: %s', e)
+            return
+
+        if not queue:
+            logger.info('[DRY RUN] Nothing to download.')
+            return
+
+        logger.info('[DRY RUN] %d book(s) in queue.', len(queue))
+        reports: list[dict] = []
+
+        for i, url in enumerate(queue):
+            try:
+                report = self.dry_run_book(url)
+                reports.append(report)
+            except Exception as e:
+                tb = traceback.format_exc()
+                logger.error('[DRY RUN] Error processing %s: %s\n%s', url, e, tb)
+
+            if i < len(queue) - 1:
+                time.sleep(self._config.book_wait)
+
+        downloaded = [r for r in reports if not r.get('skipped')]
+        skipped = [r for r in reports if r.get('skipped')]
+        needs_attention = sum(
+            1 for r in downloaded
+            if r['routing'] in ('multi_collection', 'missing_volumes', 'file_conflict')
+        )
+        elapsed = time.strftime('%H:%M:%S', time.gmtime(time.time() - start))
+        logger.info(
+            '[DRY RUN] Done. %d would download (%d need attention), %d skipped. Elapsed: %s',
+            len(downloaded), needs_attention, len(skipped), elapsed,
+        )
+        notifier_module.send_success(self._config, reports, elapsed, dry_run=True)
 
     def run(self) -> None:
         """Main loop: fetch_queue() → download each book in order."""

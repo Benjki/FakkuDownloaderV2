@@ -13,6 +13,7 @@ from organizer import (
     check_ownership,
     compute_short_title,
     detect_series,
+    extract_cover_group,
     extract_metadata,
     pack_cbz,
     route_book,
@@ -70,8 +71,9 @@ def _fake_png() -> bytes:
 
 class TestRouteBook:
     def test_cover_routing(self):
-        b = make_oneshot(pages=4, is_cover=True)
-        assert route_book(b) == 'Covers'
+        b = make_oneshot(pages=4, is_cover=True, title='X-Eros Pinup #82 Kito Sakeru')
+        result = route_book(b).replace('\\', '/')
+        assert result == 'Covers/X-Eros Pinup'
 
     def test_oneshot_routing(self):
         b = make_oneshot()  # title='Test Book' → letter 'T'
@@ -95,7 +97,8 @@ class TestRouteBook:
 
     def test_cover_takes_priority_over_series(self):
         b = make_series(is_cover=True, pages=2)
-        assert route_book(b) == 'Covers'
+        result = route_book(b).replace('\\', '/')
+        assert result.startswith('Covers/')
 
     def test_multi_collection_routes_to_fix_manually(self):
         b = make_oneshot(multi_collection=True)
@@ -217,8 +220,8 @@ SAMPLE_HTML = """\
 <div class="text-default-link table-cell w-full space-y-2 text-left align-top [&>a]:inline">Great Author</div>
 <div class="text-default-link table-cell w-full space-y-2 text-left align-top [&>a]:inline">Some Parody</div>
 <div class="text-default-link table-cell w-full space-y-2 text-left align-top [&>a]:inline">220 pages</div>
-<a href="/tags/romance">Romance</a>
-<a href="/genres/ecchi">Ecchi</a>
+<a data-attribute-count="100" href="/tags/romance">Romance</a>
+<a data-attribute-count="200" href="/genres/ecchi">Ecchi</a>
 </body></html>"""
 
 
@@ -243,10 +246,10 @@ class TestExtractMetadata:
         with pytest.raises(MetadataError):
             extract_metadata('<html><body></body></html>')
 
-    def test_missing_author_raises(self):
+    def test_missing_author_returns_empty_string(self):
         html = '<html><body><h1 class="block col-span-full text-2xl font-bold text-brand-light text-left dark:text-white dark:link:text-white pt-0">Title</h1></body></html>'
-        with pytest.raises(MetadataError):
-            extract_metadata(html)
+        meta = extract_metadata(html)
+        assert meta['author'] == ''
 
 
 # ---------------------------------------------------------------------------
@@ -278,8 +281,9 @@ class TestPackCbz:
         for i in range(1, 4):
             (temp / f'{i}.png').write_bytes(_fake_png())
 
+        book = Book(title='Test', author='Author', pages=3, tags=['Romance', 'Comedy'])
         dest = str(tmp_path / 'test.cbz')
-        pack_cbz(str(temp), dest, ['Romance', 'Comedy'])
+        pack_cbz(str(temp), dest, book)
 
         assert Path(dest).exists()
         with zipfile.ZipFile(dest) as zf:
@@ -294,19 +298,24 @@ class TestPackCbz:
         temp.mkdir()
         (temp / '1.png').write_bytes(_fake_png())
 
+        book = Book(title='Tagged', author='Author', pages=1, tags=['Action', 'Drama'],
+                    source_url='https://www.fakku.net/hentai/tagged')
         dest = str(tmp_path / 'tagged.cbz')
-        pack_cbz(str(temp), dest, ['Action', 'Drama'])
+        pack_cbz(str(temp), dest, book)
 
         with zipfile.ZipFile(dest) as zf:
             xml = zf.read('ComicInfo.xml').decode()
         assert 'Action' in xml
         assert 'Drama' in xml
+        assert 'Tagged' in xml
+        assert 'Author' in xml
+        assert 'fakku.net' in xml
 
     def test_raises_on_empty_dir(self, tmp_path):
         empty = tmp_path / 'empty'
         empty.mkdir()
         with pytest.raises(ValueError, match='No PNG'):
-            pack_cbz(str(empty), str(tmp_path / 'out.cbz'), [])
+            pack_cbz(str(empty), str(tmp_path / 'out.cbz'), Book())
 
 
 # ---------------------------------------------------------------------------
@@ -412,3 +421,53 @@ class TestDetectSeries:
             None,
         )
         assert short is None
+
+
+# ---------------------------------------------------------------------------
+# extract_cover_group
+# ---------------------------------------------------------------------------
+
+class TestExtractCoverGroup:
+    @pytest.mark.parametrize('title, expected', [
+        # Spec examples — delimiter: #N
+        ('X-Eros Pinup #82 Kito Sakeru',                                           'X-Eros Pinup'),
+        ('X-Eros Girls Collection #62  Akinosora [Akinosora]',                     'X-Eros Girls Collection'),
+        # Spec examples — delimiter: keyword + number
+        ('Kari-YUG Vol. 52 [YUG]',                                                 'Kari-YUG'),
+        ("Cover's Comment Part 158 NaPaTa",                                        "Cover's Comment"),
+        # Spec examples — delimiter: date-like
+        ('Kairakuten Heroines 2020-12 - Remu',                                     'Kairakuten Heroines'),
+        ('Bavel 2020-0607 Double Cover',                                            'Bavel'),
+        # Spec examples — delimiter: standalone dash
+        ("BEAST Cover Girl - Miu's Summer \u2764 by Nakamachi Machi [Nakamachi Machi]", 'BEAST Cover Girl'),
+        # Spec examples — no delimiter, 3-word fallback
+        ('48 Sex Positions Under the Kotatsu',                                     '48 Sex Positions'),
+        # Spec examples — delimiter: bare integer, prefix > 3 tokens → cap
+        ('Weekly Kairakuten Key-Visual Collection 95 [Aramaki Echizen]',           'Weekly Kairakuten Key-Visual'),
+        # Single word, no delimiter
+        ('Kairakuten',                                                              'Kairakuten'),
+    ])
+    def test_spec_examples(self, title, expected):
+        assert extract_cover_group(title) == expected
+
+    def test_keyword_without_following_number_does_not_fire(self):
+        # 'Vol.' at end has no following numeric token → rule 1 skipped → fallback first 3
+        # replace_illegal strips trailing period, so result loses the '.'
+        assert extract_cover_group('My Book Vol.') == 'My Book Vol'
+
+    def test_author_tag_stripped_before_processing(self):
+        result_bare   = extract_cover_group('X-Eros Pinup #82 Kito Sakeru')
+        result_tagged = extract_cover_group('X-Eros Pinup #82 Kito Sakeru [Kito Sakeru]')
+        assert result_bare == result_tagged
+
+    def test_delimiter_at_index_zero_uses_fallback(self):
+        # First token is a bare integer → empty prefix → fallback gives first 3 tokens
+        assert extract_cover_group('48 Sex Positions Under the Kotatsu') == '48 Sex Positions'
+
+    def test_two_word_title_no_delimiter(self):
+        assert extract_cover_group('Bavel Special') == 'Bavel Special'
+
+    def test_hyphenated_token_counts_as_one(self):
+        # 'Key-Visual' is one token; result must be exactly 3 tokens
+        result = extract_cover_group('Weekly Kairakuten Key-Visual Collection 95')
+        assert result == 'Weekly Kairakuten Key-Visual'

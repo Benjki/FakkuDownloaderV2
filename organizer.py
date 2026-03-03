@@ -14,6 +14,14 @@ from helper import replace_illegal, first_letter, normalise_url
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Cover group extraction — module-level constants
+# ---------------------------------------------------------------------------
+
+_COVER_DELIMITER_KEYWORDS = frozenset({'vol', 'vol.', 'part', 'no', 'no.', 'number', 'issue'})
+_COVER_DATE_RE = re.compile(r'^\d{4}[-/]\d{2,}')  # YYYY-MM, YYYY-MMDD, YYYY-MM-DD …
+_COVER_YYYYMMDD_RE = re.compile(r'^\d{8}$')        # 20200607
+
 
 class MetadataError(Exception):
     pass
@@ -46,8 +54,10 @@ def extract_metadata(html: str) -> dict:
         class_=lambda c: c and 'table-cell' in c and 'space-y-2' in c,
     )
     if not other_divs:
-        raise MetadataError('Cannot find author — CSS selector may need updating')
-    author = other_divs[0].get_text(strip=True)
+        logger.warning('Cannot find author — continuing without artist name')
+        author = ''
+    else:
+        author = other_divs[0].get_text(strip=True)
 
     # Page count
     page_divs = [d for d in other_divs if 'pages' in d.get_text()]
@@ -58,9 +68,19 @@ def extract_metadata(html: str) -> dict:
         m = re.search(r'(\d+)', page_text)
         pages = int(m.group(1)) if m else 1
 
-    # Tags
-    tag_links = soup.select('a[href*="/tags/"]') or soup.select('a[href*="/genres/"]')
-    tags = [a.get_text(strip=True) for a in tag_links if a.get_text(strip=True)]
+    # Tags — require data-attribute-count to exclude <template> anchors that
+    # share the same /tags/ href pattern but contain prefixed text like "tags: Foo".
+    tag_links = (
+        soup.select('a[href*="/tags/"][data-attribute-count]')
+        or soup.select('a[href*="/genres/"][data-attribute-count]')
+    )
+    _seen: set[str] = set()
+    tags = []
+    for a in tag_links:
+        text = a.get_text(strip=True)
+        if text and text not in _seen:
+            _seen.add(text)
+            tags.append(text)
 
     return {'title': title, 'author': author, 'pages': pages, 'tags': tags}
 
@@ -204,6 +224,67 @@ def compute_short_title(title: str, series_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Cover group extraction
+# ---------------------------------------------------------------------------
+
+def extract_cover_group(title: str) -> str:
+    """
+    Derive a short grouping label from a cover title for use as a subfolder
+    name under Covers/.  See specs/covers.md for the full algorithm.
+
+    Examples:
+        'X-Eros Pinup #82 Kito Sakeru'            -> 'X-Eros Pinup'
+        'Kari-YUG Vol. 52 [YUG]'                  -> 'Kari-YUG'
+        'Kairakuten Heroines 2020-12 - Remu'       -> 'Kairakuten Heroines'
+        "Cover's Comment Part 158 NaPaTa"          -> "Cover's Comment"
+        '48 Sex Positions Under the Kotatsu'       -> '48 Sex Positions'
+    """
+    # Step 1: strip trailing [Author] tag
+    cleaned = re.sub(r'\s*\[[^\]]*\]\s*$', '', title).strip()
+    # Step 1b: strip trailing non-word decoration (emoji, ❤, ★ …)
+    cleaned = re.sub(r"[^\w\s\-'.,#()]+$", '', cleaned, flags=re.UNICODE).strip()
+
+    tokens = cleaned.split()
+    if not tokens:
+        return replace_illegal(title[:50].strip())
+
+    # Step 3: find the index of the first delimiter token
+    delimiter_idx: int | None = None
+    for i, tok in enumerate(tokens):
+        tl = tok.lower()
+        # Priority 1: keyword (Vol, Part, No, Issue …) followed by a numeric token
+        if tl in _COVER_DELIMITER_KEYWORDS:
+            if i + 1 < len(tokens) and tokens[i + 1].isdigit():
+                delimiter_idx = i
+                break
+        # Priority 2: #N  (e.g. #82, #62)
+        if re.match(r'^#\d+', tok):
+            delimiter_idx = i
+            break
+        # Priority 3: date-like  YYYY-MM…  or  YYYYMMDD
+        if _COVER_DATE_RE.match(tok) or _COVER_YYYYMMDD_RE.match(tok):
+            delimiter_idx = i
+            break
+        # Priority 4: purely numeric token
+        if tok.isdigit():
+            delimiter_idx = i
+            break
+        # Priority 5: standalone dash separator  ( … - Subtitle )
+        if tok == '-':
+            delimiter_idx = i
+            break
+
+    # Steps 4 + 5: build prefix, cap at 3 tokens
+    if delimiter_idx is not None and delimiter_idx > 0:
+        prefix = tokens[:delimiter_idx]
+    else:
+        # No delimiter found, OR delimiter at index 0 (empty prefix) → first 3 tokens
+        prefix = tokens
+
+    return replace_illegal(' '.join(prefix[:3]))
+
+
+# ---------------------------------------------------------------------------
 # Routing
 # ---------------------------------------------------------------------------
 
@@ -212,17 +293,19 @@ def route_book(book: Book) -> str:
     Return destination directory path relative to storage_primary.
     Priority:
     1. multi_collection or missing_volumes -> 'TO FIX MANUALLY'
-    2. is_cover (pages <= 4) -> 'Covers'
+    2. is_cover (pages <= 4) -> 'Covers/<group>'
     3. series_name is not None -> '<Letter>/<Series> [Author]'
     4. default (one-shot) -> '<Letter>/%%%OneShots%%%'
     """
-    if book.multi_collection or book.missing_volumes:
+    if book.multi_collection or book.missing_volumes or book.file_conflict:
         return 'TO FIX MANUALLY'
     if book.is_cover:
-        return 'Covers'
+        group = extract_cover_group(book.title)
+        return str(Path('Covers') / group)
     if book.is_series():
         letter = first_letter(book.series_name)
-        folder_name = replace_illegal(f'{book.series_name} [{book.author}]')
+        author_tag = f' [{book.author}]' if book.author else ''
+        folder_name = replace_illegal(f'{book.series_name}{author_tag}')
         return str(Path(letter) / folder_name)
     letter = first_letter(book.title)
     return str(Path(letter) / '%%%OneShots%%%')
@@ -239,10 +322,11 @@ def build_filename(book: Book) -> str:
     One-shot/Cover: '<Title> [<Author>].cbz'
     255-char limit on stem before adding extension.
     """
+    author_tag = f' [{book.author}]' if book.author else ''
     if book.is_series():
-        stem = f'{book.series_name} vol.{book.volume_number} - {book.short_title} [{book.author}]'
+        stem = f'{book.series_name} vol.{book.volume_number} - {book.short_title}{author_tag}'
     else:
-        stem = f'{book.title} [{book.author}]'
+        stem = f'{book.title}{author_tag}'
     stem = replace_illegal(stem, max_length=251)  # 251 + 4 (.cbz) = 255
     return stem + '.cbz'
 
@@ -257,13 +341,15 @@ def check_and_move_oneshot(
     vol1_title: str,
     storage_primary: str,
     series_dir: str,
+    dry_run: bool = False,
 ) -> dict | None:
     """
     When vol.N (N>=2) is detected and series_dir doesn't exist yet,
     check if vol.1 is stranded in %%%OneShots%%% and move it.
 
-    Returns a dict {'from': old_name, 'to': new_name} if a file was moved,
-    or None otherwise.
+    Returns a dict {'from': old_name, 'to': new_name} if a file was moved
+    (or would be moved in dry_run mode), or None otherwise.
+    When dry_run=True the filesystem check is performed but no file is renamed.
     """
     oneshots_dir = Path(storage_primary) / first_letter(vol1_title) / '%%%OneShots%%%'
     if not oneshots_dir.exists():
@@ -279,18 +365,21 @@ def check_and_move_oneshot(
 
     if len(candidates) == 1:
         candidate = candidates[0]
-        target_dir = Path(storage_primary) / series_dir
-        target_dir.mkdir(parents=True, exist_ok=True)
-        # Derive the short title from the matched file's own stem rather than
-        # from vol1_title (which is the series name and would produce a wrong filename).
-        # Stem is like "Series Name - Short Title [Author]" — strip [Author] then
-        # strip the series name prefix.
         bare = re.sub(r'\s*\[.*?\]\s*$', '', candidate.stem)
         short = compute_short_title(bare, series_name)
         new_name = replace_illegal(
             f'{series_name} vol.1 - {short} [{author}]',
             max_length=251,
         ) + '.cbz'
+        if dry_run:
+            logger.info('Retroactive move (dry run): %s -> %s', candidate.name, new_name)
+            return {'from': candidate.name, 'to': new_name}
+        target_dir = Path(storage_primary) / series_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        # Derive the short title from the matched file's own stem rather than
+        # from vol1_title (which is the series name and would produce a wrong filename).
+        # Stem is like "Series Name - Short Title [Author]" — strip [Author] then
+        # strip the series name prefix.
         dest = target_dir / new_name
         candidate.rename(dest)
         logger.info('Retroactive move: %s -> %s', candidate.name, dest)
@@ -313,16 +402,28 @@ def check_and_move_oneshot(
 # CBZ generation
 # ---------------------------------------------------------------------------
 
-def _build_comic_info_xml(tags: list[str]) -> str:
+def _build_comic_info_xml(book: 'Book') -> str:
     root = ET.Element('ComicInfo')
     root.set('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance')
     root.set('xmlns:xsd', 'http://www.w3.org/2001/XMLSchema')
-    tags_el = ET.SubElement(root, 'Tags')
-    tags_el.text = ', '.join(tags) if tags else ''
+
+    def _add(tag: str, value: str | int | None) -> None:
+        if value is not None and value != '':
+            ET.SubElement(root, tag).text = str(value)
+
+    _add('Title', book.title)
+    _add('Writer', book.author)
+    _add('PageCount', book.pages if book.pages else None)
+    if book.series_name:
+        _add('Series', book.series_name)
+        _add('Number', book.volume_number)
+    _add('Web', book.source_url)
+    _add('Tags', ', '.join(book.tags) if book.tags else None)
+
     return '<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(root, encoding='unicode')
 
 
-def pack_cbz(temp_dir: str, dest_path: str, tags: list[str]) -> None:
+def pack_cbz(temp_dir: str, dest_path: str, book: 'Book') -> None:
     """
     Pack all PNGs from temp_dir into a Komga-compatible CBZ.
     Pages at root level, includes ComicInfo.xml.
@@ -339,7 +440,7 @@ def pack_cbz(temp_dir: str, dest_path: str, tags: list[str]) -> None:
     with zipfile.ZipFile(dest, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
         for i, png in enumerate(pngs, start=1):
             zf.write(png, arcname=f'{i:03d}.png')
-        zf.writestr('ComicInfo.xml', _build_comic_info_xml(tags))
+        zf.writestr('ComicInfo.xml', _build_comic_info_xml(book))
 
     # Validate
     with zipfile.ZipFile(dest, 'r') as zf:

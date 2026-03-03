@@ -19,12 +19,14 @@ class Book:
     is_cover: bool = False           # True when pages <= 4
     multi_collection: bool = False   # True when book belongs to >1 FAKKU collection
     missing_volumes: bool = False    # True when preceding series volumes cannot be found
+    file_conflict: bool = False      # True when a CBZ already exists at the computed destination
 
     def is_series(self) -> bool:
         return self.series_name is not None
 
     def display_name(self) -> str:
         """Human-readable string for logging."""
+        author_tag = f' [{self.author}]' if self.author else ''
         if self.is_series():
-            return f"{self.series_name} vol.{self.volume_number} - {self.short_title} [{self.author}]"
-        return f"{self.title} [{self.author}]"
+            return f"{self.series_name} vol.{self.volume_number} - {self.short_title}{author_tag}"
+        return f"{self.title}{author_tag}"
