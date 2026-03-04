@@ -77,7 +77,7 @@ pytest tests/test_organizer.py::TestRouteBook::test_series_routing
 
 **User-Agent is critical** — Never remove the explicit `user_agent` from `Browser.start()`. Without it, Playwright reports `HeadlessChrome` and FAKKU serves a stripped page.
 
-**`channel='chrome'`** — production uses the real Chrome binary (`playwright install chrome --with-deps` in the Dockerfile) for better TLS fingerprinting. Local dev also requires Chrome installed.
+**`channel='chrome'`** — do NOT use. It causes Chrome to crash at startup in containers (SIGTRAP from crashpad handler) and also broke collection loading. Use Playwright's bundled Chromium; the explicit `user_agent` in `Browser.start()` handles fingerprinting.
 
 **Timing** — All sleeps use jitter (`random.uniform`). `PAGE_WAIT`, `BOOK_WAIT` in the k8s cronjob override the code defaults — keep them in sync when changing defaults.
 
