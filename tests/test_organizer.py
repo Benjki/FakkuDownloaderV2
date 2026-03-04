@@ -127,9 +127,27 @@ class TestBuildFilename:
         b = make_oneshot(title='My Book', author='Author')
         assert build_filename(b) == 'My Book [Author].cbz'
 
-    def test_series_filename(self):
+    def test_series_filename_with_subtitle(self):
         b = make_series(series_name='MySeries', volume_number=3, short_title='Part 3', author='Auth')
         assert build_filename(b) == 'MySeries vol.3 - Part 3 [Auth].cbz'
+
+    def test_series_filename_empty_short_title(self):
+        # short_title equals series_name (compute_short_title fallback) — omit subtitle
+        b = make_series(series_name='Tropical Remnants', volume_number=1,
+                        short_title='Tropical Remnants', author='Auth')
+        assert build_filename(b) == 'Tropical Remnants vol.1 [Auth].cbz'
+
+    def test_series_filename_bare_number_short_title(self):
+        # short_title is a bare integer — omit subtitle
+        b = make_series(series_name='Dark Pleasure', volume_number=2,
+                        short_title='2', author='Auth')
+        assert build_filename(b) == 'Dark Pleasure vol.2 [Auth].cbz'
+
+    def test_series_filename_none_short_title(self):
+        # short_title is None — omit subtitle
+        b = make_series(series_name='My Series', volume_number=1,
+                        short_title=None, author='Auth')
+        assert build_filename(b) == 'My Series vol.1 [Auth].cbz'
 
     def test_ends_with_cbz(self):
         assert build_filename(make_oneshot()).endswith('.cbz')
@@ -164,6 +182,31 @@ class TestComputeShortTitle:
     def test_strips_leading_separator(self):
         result = compute_short_title('My Series - Chapter 1', 'My Series')
         assert result == 'Chapter 1'
+
+    def test_title_equals_series_returns_title(self):
+        # short is empty after strip → falls back to full title
+        result = compute_short_title('Wonderful Long Distance!', 'Wonderful Long Distance!')
+        assert result == 'Wonderful Long Distance!'
+
+    def test_word_level_fallback_comma(self):
+        # comma in title missing from series name → exact startswith fails → word match
+        result = compute_short_title(
+            'Akari-chan, Be My Onahole ~Part 1~',
+            'Akari-chan Be My Onahole',
+        )
+        assert result == '~Part 1~'
+
+    def test_word_level_fallback_part2(self):
+        result = compute_short_title(
+            'Akari-chan, Be My Onahole ~Part 2~',
+            'Akari-chan Be My Onahole',
+        )
+        assert result == '~Part 2~'
+
+    def test_word_level_no_match_returns_full(self):
+        # Completely different title — word-level also fails → full title
+        result = compute_short_title('Something Else Entirely', 'Akari-chan Be My Onahole')
+        assert result == 'Something Else Entirely'
 
 
 # ---------------------------------------------------------------------------

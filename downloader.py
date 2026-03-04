@@ -197,7 +197,7 @@ class Downloader:
                 inferred = infer_series_from_title(title)
                 if inferred:
                     series_name, volume_number = inferred
-                    short_title = title  # full title; compute_short_title would give bare "N"
+                    short_title = compute_short_title(title, series_name)
                     logger.info(
                         'Title heuristic: inferred series "%s" vol.%d from title "%s"',
                         series_name, volume_number, title,
@@ -535,7 +535,7 @@ class Downloader:
                 inferred = infer_series_from_title(title)
                 if inferred:
                     series_name, volume_number = inferred
-                    short_title = title  # full title; compute_short_title would give bare "N"
+                    short_title = compute_short_title(title, series_name)
                     logger.info(
                         '[DRY RUN] Title heuristic: inferred series "%s" vol.%d from title "%s"',
                         series_name, volume_number, title,

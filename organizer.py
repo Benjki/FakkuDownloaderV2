@@ -217,12 +217,44 @@ def detect_series(
     return series_name, volume_number, None
 
 
+def _strip_series_prefix(title: str, series_name: str) -> str:
+    """
+    Word-level prefix strip that ignores punctuation differences between
+    series_name and title (e.g. comma vs no-comma, hyphen variants).
+
+    Extracts alphanumeric word tokens from both strings and checks whether
+    the title starts with the same word sequence as the series name.
+    If so, scans the original title character-by-character to find the exact
+    position where the series prefix ends, then returns the trimmed remainder.
+    Returns '' if no match.
+    """
+    series_words = re.findall(r'[a-z0-9]+', series_name.lower())
+    if not series_words:
+        return ''
+    title_words = re.findall(r'[a-z0-9]+', title.lower())
+    if title_words[:len(series_words)] != series_words:
+        return ''
+    # Walk the original title, consuming exactly len(series_words) word tokens
+    words_matched = 0
+    i = 0
+    while i < len(title) and words_matched < len(series_words):
+        if title[i].isalnum():
+            while i < len(title) and title[i].isalnum():
+                i += 1
+            words_matched += 1
+        else:
+            i += 1
+    return title[i:].lstrip(' ,-:').strip()
+
+
 def compute_short_title(title: str, series_name: str) -> str:
     """Strip series_name prefix from title (case-insensitive). Returns full title if no match."""
     if title.lower().startswith(series_name.lower()):
         short = title[len(series_name):].lstrip(' -:').strip()
         return short if short else title
-    return title
+    # Fallback: word-level match ignoring punctuation differences
+    short = _strip_series_prefix(title, series_name)
+    return short if short else title
 
 
 def infer_series_from_title(title: str) -> tuple[str, int] | None:
@@ -337,13 +369,21 @@ def route_book(book: Book) -> str:
 def build_filename(book: Book) -> str:
     """
     Returns filename WITH .cbz extension.
-    Multi-volume: '<Series> vol.<N> - <Short Title> [<Author>].cbz'
+    Series with meaningful subtitle: '<Series> vol.<N> - <Subtitle> [<Author>].cbz'
+    Series with no meaningful subtitle: '<Series> vol.<N> [<Author>].cbz'
     One-shot/Cover: '<Title> [<Author>].cbz'
     255-char limit on stem before adding extension.
+
+    Subtitle is omitted when it is empty, a bare integer, or identical to the
+    series name (the compute_short_title fallback when title == series name).
     """
     author_tag = f' [{book.author}]' if book.author else ''
     if book.is_series():
-        stem = f'{book.series_name} vol.{book.volume_number} - {book.short_title}{author_tag}'
+        short = book.short_title or ''
+        if short and not short.isdigit() and short != book.series_name:
+            stem = f'{book.series_name} vol.{book.volume_number} - {short}{author_tag}'
+        else:
+            stem = f'{book.series_name} vol.{book.volume_number}{author_tag}'
     else:
         stem = f'{book.title}{author_tag}'
     stem = replace_illegal(stem, max_length=251)  # 251 + 4 (.cbz) = 255
@@ -386,10 +426,16 @@ def check_and_move_oneshot(
         candidate = candidates[0]
         bare = re.sub(r'\s*\[.*?\]\s*$', '', candidate.stem)
         short = compute_short_title(bare, series_name)
-        new_name = replace_illegal(
-            f'{series_name} vol.1 - {short} [{author}]',
-            max_length=251,
-        ) + '.cbz'
+        if short and not short.isdigit() and short != series_name:
+            new_name = replace_illegal(
+                f'{series_name} vol.1 - {short} [{author}]',
+                max_length=251,
+            ) + '.cbz'
+        else:
+            new_name = replace_illegal(
+                f'{series_name} vol.1 [{author}]',
+                max_length=251,
+            ) + '.cbz'
         if dry_run:
             logger.info('Retroactive move (dry run): %s -> %s', candidate.name, new_name)
             return {'from': candidate.name, 'to': new_name}

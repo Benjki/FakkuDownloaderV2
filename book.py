@@ -28,5 +28,8 @@ class Book:
         """Human-readable string for logging."""
         author_tag = f' [{self.author}]' if self.author else ''
         if self.is_series():
-            return f"{self.series_name} vol.{self.volume_number} - {self.short_title}{author_tag}"
+            short = self.short_title or ''
+            if short and not short.isdigit() and short != self.series_name:
+                return f"{self.series_name} vol.{self.volume_number} - {short}{author_tag}"
+            return f"{self.series_name} vol.{self.volume_number}{author_tag}"
         return f"{self.title}{author_tag}"
