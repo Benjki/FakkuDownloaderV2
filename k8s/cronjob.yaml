@@ -11,6 +11,10 @@ spec:
       backoffLimit: 0
       template:
         spec:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
           imagePullSecrets:
             - name: dockerhub-secret
           restartPolicy: Never
@@ -18,6 +22,8 @@ spec:
             - name: fakku-downloader
               image: benjki1/purchasetracker:v98.0.00055da30c56d9d96a315b9c3b7e473d55f961fe
               env:
+                - name: PLAYWRIGHT_BROWSERS_PATH
+                  value: "/ms-playwright"
                 - name: FAKKU_COLLECTION_URL
                   value: "https://www.fakku.net/users/benjki-2057710/collections/to-dwnl"
                 - name: STORAGE_PRIMARY
