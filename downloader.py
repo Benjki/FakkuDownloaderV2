@@ -25,6 +25,7 @@ from organizer import (
     detect_series,
     extract_metadata,
     build_filename,
+    infer_series_from_title,
     pack_cbz,
     route_book,
 )
@@ -177,6 +178,15 @@ class Downloader:
             elif raw_series:
                 series_name = raw_series
                 short_title = compute_short_title(title, series_name)
+            else:
+                inferred = infer_series_from_title(title)
+                if inferred:
+                    series_name, volume_number = inferred
+                    short_title = title  # full title; compute_short_title would give bare "N"
+                    logger.info(
+                        'Title heuristic: inferred series "%s" vol.%d from title "%s"',
+                        series_name, volume_number, title,
+                    )
 
         # 6. Build Book dataclass
         book = Book(
@@ -495,6 +505,15 @@ class Downloader:
             elif raw_series:
                 series_name = raw_series
                 short_title = compute_short_title(title, series_name)
+            else:
+                inferred = infer_series_from_title(title)
+                if inferred:
+                    series_name, volume_number = inferred
+                    short_title = title  # full title; compute_short_title would give bare "N"
+                    logger.info(
+                        '[DRY RUN] Title heuristic: inferred series "%s" vol.%d from title "%s"',
+                        series_name, volume_number, title,
+                    )
 
         # 6. Build Book dataclass
         book = Book(

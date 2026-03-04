@@ -15,6 +15,7 @@ from organizer import (
     detect_series,
     extract_cover_group,
     extract_metadata,
+    infer_series_from_title,
     pack_cbz,
     route_book,
 )
@@ -421,6 +422,38 @@ class TestDetectSeries:
             None,
         )
         assert short is None
+
+
+# ---------------------------------------------------------------------------
+# infer_series_from_title
+# ---------------------------------------------------------------------------
+
+class TestInferSeriesFromTitle:
+    def test_basic_vol2(self):
+        assert infer_series_from_title('Dark Pleasure 2') == ('Dark Pleasure', 2)
+
+    def test_higher_volume(self):
+        assert infer_series_from_title('Something Else 5') == ('Something Else', 5)
+
+    def test_multi_word_series(self):
+        assert infer_series_from_title('My Long Series Title 3') == ('My Long Series Title', 3)
+
+    def test_vol1_returns_none(self):
+        # Vol 1 is intentionally excluded — it goes to oneshots and gets rescued later
+        assert infer_series_from_title('Dark Pleasure 1') is None
+
+    def test_no_trailing_number_returns_none(self):
+        assert infer_series_from_title('Dark Pleasure') is None
+
+    def test_non_numeric_suffix_returns_none(self):
+        assert infer_series_from_title('Dark Pleasure II') is None
+
+    def test_number_mid_title_returns_none(self):
+        # Number is not at the end
+        assert infer_series_from_title('3D Something') is None
+
+    def test_single_word_with_number(self):
+        assert infer_series_from_title('Series 2') == ('Series', 2)
 
 
 # ---------------------------------------------------------------------------

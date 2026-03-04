@@ -22,6 +22,8 @@ _COVER_DELIMITER_KEYWORDS = frozenset({'vol', 'vol.', 'part', 'no', 'no.', 'numb
 _COVER_DATE_RE = re.compile(r'^\d{4}[-/]\d{2,}')  # YYYY-MM, YYYY-MMDD, YYYY-MM-DD …
 _COVER_YYYYMMDD_RE = re.compile(r'^\d{8}$')        # 20200607
 
+_TITLE_VOLUME_RE = re.compile(r'^(.+?)\s+(\d+)$')
+
 
 class MetadataError(Exception):
     pass
@@ -221,6 +223,23 @@ def compute_short_title(title: str, series_name: str) -> str:
         short = title[len(series_name):].lstrip(' -:').strip()
         return short if short else title
     return title
+
+
+def infer_series_from_title(title: str) -> tuple[str, int] | None:
+    """
+    Heuristic fallback for when Fakku reports no series.
+    If title ends with a bare integer >= 2 (e.g. "Dark Pleasure 2"),
+    infer series name and volume number from the title itself.
+    Returns (series_name, volume_number) or None.
+    False positives land in TO FIX MANUALLY via the missing-volumes check.
+    """
+    m = _TITLE_VOLUME_RE.match(title)
+    if not m:
+        return None
+    volume = int(m.group(2))
+    if volume < 2:
+        return None
+    return m.group(1), volume
 
 
 # ---------------------------------------------------------------------------
