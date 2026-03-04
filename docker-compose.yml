@@ -24,4 +24,5 @@ services:
       TEMP_DIR: /app/queue/tmp
       STORAGE_PRIMARY: /app/downloaded
     volumes:
+      - ./downloaded:/app/downloaded
       - ./queue:/app/queue

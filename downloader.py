@@ -16,7 +16,7 @@ import notifier as notifier_module
 from book import Book
 from browser import Browser
 from config import Config
-from helper import load_done_file, append_done, create_folder_if_missing, normalise_url, replace_illegal
+from helper import load_done_file, append_done, create_folder_if_missing, normalise_url, replace_illegal, first_letter
 from organizer import (
     MetadataError,
     check_and_move_oneshot,
@@ -177,6 +177,21 @@ class Downloader:
                 volume_number = None
             elif raw_series:
                 series_name = raw_series
+                # Fakku's volume list is sometimes incomplete — the book isn't listed
+                # in its own series page, so detect_series() defaults to vol.1.
+                # If the title heuristic agrees on the series name but suggests a
+                # higher volume, trust the title over the broken Fakku list.
+                inferred = infer_series_from_title(title)
+                if (
+                    inferred
+                    and inferred[0].lower() == series_name.lower()
+                    and inferred[1] > volume_number
+                ):
+                    logger.info(
+                        'Title heuristic overrides Fakku vol.%d -> vol.%d for series "%s"',
+                        volume_number, inferred[1], series_name,
+                    )
+                    volume_number = inferred[1]
                 short_title = compute_short_title(title, series_name)
             else:
                 inferred = infer_series_from_title(title)
@@ -504,6 +519,17 @@ class Downloader:
                 volume_number = None
             elif raw_series:
                 series_name = raw_series
+                inferred = infer_series_from_title(title)
+                if (
+                    inferred
+                    and inferred[0].lower() == series_name.lower()
+                    and inferred[1] > volume_number
+                ):
+                    logger.info(
+                        '[DRY RUN] Title heuristic overrides Fakku vol.%d -> vol.%d for series "%s"',
+                        volume_number, inferred[1], series_name,
+                    )
+                    volume_number = inferred[1]
                 short_title = compute_short_title(title, series_name)
             else:
                 inferred = infer_series_from_title(title)
@@ -579,6 +605,12 @@ class Downloader:
             cbz_path = str(Path(series_dir_abs) / filename)
 
         # Steps 8-13 skipped (no screenshots, no CBZ, no done.txt update)
+        # Create an empty placeholder so folder structure is visible for inspection.
+        # Not added to done.txt — delete these manually after reviewing.
+        placeholder = Path(cbz_path)
+        if not placeholder.exists():
+            placeholder.parent.mkdir(parents=True, exist_ok=True)
+            placeholder.write_bytes(b'')
 
         if multi_collection:
             routing = 'multi_collection'
@@ -623,6 +655,81 @@ class Downloader:
             'conflicting_path': conflicting_path,
         }
 
+    def _reconcile_missing_volumes(self, reports: list[dict], dry_run: bool = False) -> int:
+        """
+        One reconciliation pass over reports where routing == 'missing_volumes'.
+        For each such book, checks whether every missing preceding volume is now
+        present in the correct series folder (on disk in normal mode; via this
+        run's reports in dry-run mode).  If all are present, moves the CBZ from
+        TO FIX MANUALLY/ to the series folder and updates the report in-place.
+
+        Returns the number of files moved (or would-be moved in dry-run).
+        The caller should loop until the return value is 0.
+        """
+        config = self._config
+        moved = 0
+
+        for report in reports:
+            if report.get('routing') != 'missing_volumes':
+                continue
+
+            series_name = report.get('series_name')
+            author = report.get('author', '')
+            missing_vol_nums = report.get('missing_vol_nums', [])
+            cbz_filename = report.get('cbz_filename')
+
+            if not series_name or not cbz_filename or not missing_vol_nums:
+                continue
+
+            # Correct series folder: what route_book would return with no flags set
+            letter = first_letter(series_name)
+            author_tag = f' [{author}]' if author else ''
+            correct_rel_dir = str(Path(letter) / replace_illegal(f'{series_name}{author_tag}'))
+            series_dir_abs = Path(config.storage_primary) / correct_rel_dir
+            series_safe = replace_illegal(series_name).lower()
+
+            def vol_present(k: int) -> bool:
+                # Check filesystem — covers both previous runs and current run (normal mode)
+                if series_dir_abs.exists() and any(
+                    f.name.lower().startswith(f'{series_safe} vol.{k}')
+                    for f in series_dir_abs.glob('*.cbz')
+                ):
+                    return True
+                # In dry-run no files are written; check this run's reports instead.
+                # A volume reconciled in an earlier pass of the loop will already
+                # have routing == 'series', so it counts here too.
+                if dry_run:
+                    return any(
+                        r.get('series_name') == series_name
+                        and r.get('volume_number') == k
+                        and r.get('routing') == 'series'
+                        for r in reports
+                    )
+                return False
+
+            if not all(vol_present(k) for k in missing_vol_nums):
+                continue
+
+            src = Path(config.storage_primary) / 'TO FIX MANUALLY' / cbz_filename
+            dest = series_dir_abs / cbz_filename
+
+            if src.exists():
+                series_dir_abs.mkdir(parents=True, exist_ok=True)
+                src.rename(dest)
+            elif not dry_run:
+                logger.warning('Reconciliation: file not found at expected path: %s', src)
+                continue
+
+            prefix = '[DRY RUN] ' if dry_run else ''
+            logger.info('%sReconciliation: moved "%s" -> %s', prefix, cbz_filename, correct_rel_dir)
+
+            report['routing'] = 'series'
+            report['series_dir'] = correct_rel_dir
+            report['cbz_path'] = str(dest)
+            moved += 1
+
+        return moved
+
     def run_dry_run(self) -> None:
         """Simulate a full run: fetch queue, check each book, print plan. Nothing is written."""
         start = time.time()
@@ -650,6 +757,15 @@ class Downloader:
 
             if i < len(queue) - 1:
                 time.sleep(self._config.book_wait)
+
+        reconciled = 0
+        while True:
+            n = self._reconcile_missing_volumes(reports, dry_run=True)
+            reconciled += n
+            if n == 0:
+                break
+        if reconciled:
+            logger.info('[DRY RUN] Reconciliation: would move %d book(s) out of TO FIX MANUALLY.', reconciled)
 
         downloaded = [r for r in reports if not r.get('skipped')]
         skipped = [r for r in reports if r.get('skipped')]
@@ -695,6 +811,15 @@ class Downloader:
             if i < len(queue) - 1:
                 logger.info('Waiting %gs before next book...', self._config.book_wait)
                 time.sleep(self._config.book_wait + random.uniform(0, 10))
+
+        reconciled = 0
+        while True:
+            n = self._reconcile_missing_volumes(reports)
+            reconciled += n
+            if n == 0:
+                break
+        if reconciled:
+            logger.info('Reconciliation: moved %d book(s) out of TO FIX MANUALLY.', reconciled)
 
         elapsed = time.strftime('%H:%M:%S', time.gmtime(time.time() - start))
         notifier_module.send_success(self._config, reports, elapsed)
