@@ -27,8 +27,6 @@ class Browser:
                 '--no-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-blink-features=AutomationControlled',
-                '--disable-crash-reporter',
-                '--disable-breakpad',
             ],
         )
         self._context = self._browser.new_context(
