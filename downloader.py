@@ -137,7 +137,7 @@ class Downloader:
     # Per-book orchestration
     # ------------------------------------------------------------------
 
-    def download_book(self, url: str) -> dict:
+    def download_book(self, url: str, idx: int = 0, total: int = 0) -> dict:
         """
         Full per-book flow (steps 1-13 from spec Section 7.1).
         Returns a report dict for the success summary email.
@@ -217,7 +217,8 @@ class Downloader:
             multi_collection=multi_collection,
         )
 
-        logger.info('Downloading: %s (%d pages)', book.display_name(), pages)
+        progress = f' - <{idx}/{total}>' if total else ''
+        logger.info('Downloading: %s (%d pages)%s', book.display_name(), pages, progress)
 
         # 7. Retroactive one-shot → series move, then missing-volume check.
         rel_dir = route_book(book)
@@ -478,7 +479,7 @@ class Downloader:
             session.cookies.set(c['name'], c['value'], domain=c.get('domain', ''))
         return session
 
-    def dry_run_book(self, url: str) -> dict:
+    def dry_run_book(self, url: str, idx: int = 0, total: int = 0) -> dict:
         """
         Simulate the full per-book flow without downloading or writing any files.
         Performs steps 1-7 (fetch, ownership, metadata, series detection, routing,
@@ -554,6 +555,9 @@ class Downloader:
             is_cover=is_cover,
             multi_collection=multi_collection,
         )
+
+        progress = f' - <{idx}/{total}>' if total else ''
+        logger.info('[DRY RUN] Processing: %s (%d pages)%s', book.display_name(), pages, progress)
 
         # 7. Retroactive oneshot move check + missing-volume check (read-only)
         rel_dir = route_book(book)
@@ -749,7 +753,7 @@ class Downloader:
 
         for i, url in enumerate(queue):
             try:
-                report = self.dry_run_book(url)
+                report = self.dry_run_book(url, idx=i + 1, total=len(queue))
                 reports.append(report)
             except Exception as e:
                 tb = traceback.format_exc()
@@ -800,7 +804,7 @@ class Downloader:
 
         for i, url in enumerate(queue):
             try:
-                report = self.download_book(url)
+                report = self.download_book(url, idx=i + 1, total=len(queue))
                 reports.append(report)
             except Exception as e:
                 tb = traceback.format_exc()
