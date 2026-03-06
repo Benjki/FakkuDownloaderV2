@@ -19,6 +19,7 @@ from config import Config
 from helper import load_done_file, append_done, create_folder_if_missing, normalise_url, replace_illegal, first_letter
 from organizer import (
     MetadataError,
+    TO_FIX_MANUALLY,
     check_and_move_oneshot,
     check_ownership,
     compute_short_title,
@@ -222,7 +223,7 @@ class Downloader:
 
         # 7. Retroactive one-shot → series move, then missing-volume check.
         rel_dir = route_book(book)
-        series_dir_abs = Path(config.storage_primary) / rel_dir
+        series_dir_abs = self._resolve_dir(rel_dir)
         series_dir_created = not series_dir_abs.exists()
         oneshot_move = None
         missing_vol_nums: list[int] = []
@@ -258,7 +259,7 @@ class Downloader:
                 )
                 book.missing_volumes = True
                 rel_dir = route_book(book)  # re-routes to TO FIX MANUALLY
-                series_dir_abs = Path(config.storage_primary) / rel_dir
+                series_dir_abs = self._resolve_dir(rel_dir)
                 series_dir_created = not series_dir_abs.exists()
 
         # 8. Create temp directory for this book's pages
@@ -299,7 +300,7 @@ class Downloader:
             )
             book.file_conflict = True
             rel_dir = route_book(book)
-            series_dir_abs = Path(config.storage_primary) / rel_dir
+            series_dir_abs = self._resolve_dir(rel_dir)
             cbz_path = str(Path(series_dir_abs) / filename)
 
         pack_cbz(temp_dir, cbz_path, book)
@@ -455,6 +456,12 @@ class Downloader:
     # Helpers
     # ------------------------------------------------------------------
 
+    def _resolve_dir(self, rel_dir: str) -> Path:
+        """Resolve a route_book() result to an absolute directory path."""
+        if rel_dir == TO_FIX_MANUALLY:
+            return Path(self._config.to_fix_manually_dir)
+        return Path(self._config.storage_primary) / rel_dir
+
     def _page_already_done(self, path: str) -> bool:
         """Return True if path exists, meets the min size, and (if configured) has valid dimensions."""
         config = self._config
@@ -561,7 +568,7 @@ class Downloader:
 
         # 7. Retroactive oneshot move check + missing-volume check (read-only)
         rel_dir = route_book(book)
-        series_dir_abs = Path(config.storage_primary) / rel_dir
+        series_dir_abs = self._resolve_dir(rel_dir)
         series_dir_created = not series_dir_abs.exists()
         oneshot_move = None
         missing_vol_nums: list[int] = []
@@ -590,7 +597,7 @@ class Downloader:
             if missing_vol_nums:
                 book.missing_volumes = True
                 rel_dir = route_book(book)
-                series_dir_abs = Path(config.storage_primary) / rel_dir
+                series_dir_abs = self._resolve_dir(rel_dir)
                 series_dir_created = not series_dir_abs.exists()
 
         # File conflict check
@@ -605,7 +612,7 @@ class Downloader:
         if conflicting_path:
             book.file_conflict = True
             rel_dir = route_book(book)
-            series_dir_abs = Path(config.storage_primary) / rel_dir
+            series_dir_abs = self._resolve_dir(rel_dir)
             cbz_path = str(Path(series_dir_abs) / filename)
 
         # Steps 8-13 skipped (no screenshots, no CBZ, no done.txt update)
@@ -714,7 +721,7 @@ class Downloader:
             if not all(vol_present(k) for k in missing_vol_nums):
                 continue
 
-            src = Path(config.storage_primary) / 'TO FIX MANUALLY' / cbz_filename
+            src = Path(config.to_fix_manually_dir) / cbz_filename
             dest = series_dir_abs / cbz_filename
 
             if src.exists():
@@ -734,7 +741,7 @@ class Downloader:
 
         return moved
 
-    def run_dry_run(self) -> None:
+    def run_dry_run(self) -> tuple[list[dict], str] | None:
         """Simulate a full run: fetch queue, check each book, print plan. Nothing is written."""
         start = time.time()
 
@@ -782,9 +789,9 @@ class Downloader:
             '[DRY RUN] Done. %d would download (%d need attention), %d skipped. Elapsed: %s',
             len(downloaded), needs_attention, len(skipped), elapsed,
         )
-        notifier_module.send_success(self._config, reports, elapsed, dry_run=True)
+        return reports, elapsed
 
-    def run(self) -> None:
+    def run(self) -> tuple[list[dict], str] | None:
         """Main loop: fetch_queue() → download each book in order."""
         start = time.time()
         reports: list[dict] = []
@@ -826,8 +833,8 @@ class Downloader:
             logger.info('Reconciliation: moved %d book(s) out of TO FIX MANUALLY.', reconciled)
 
         elapsed = time.strftime('%H:%M:%S', time.gmtime(time.time() - start))
-        notifier_module.send_success(self._config, reports, elapsed)
         logger.info('Run complete. %d book(s). Elapsed: %s', len(reports), elapsed)
+        return reports, elapsed
 
 
 def _safe_dirname(name: str) -> str:

@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from dotenv import load_dotenv
 import os
+from pathlib import Path
 import sys
 
 
@@ -22,7 +23,10 @@ class Config:
     smtp_from: str
     smtp_to: str
     # Storage
+    storage_root: str
     storage_primary: str
+    to_place_dir: str
+    to_fix_manually_dir: str
     # State files
     done_file: str
     cookies_file: str
@@ -36,6 +40,8 @@ class Config:
     allowed_image_dimensions: list[tuple[int, int]]
     max_retry: int
     chrome_offset: int | None  # None means auto-detect at runtime
+    # Mode
+    to_place_only: bool        # True = skip FAKKU downloads, only process ToPlace
 
 
 def _parse_dimensions(raw: str) -> list[tuple[int, int]]:
@@ -56,16 +62,28 @@ def _parse_dimensions(raw: str) -> list[tuple[int, int]]:
 def load_config() -> Config:
     load_dotenv()
 
-    required = [
-        'FAKKU_USERNAME', 'FAKKU_PASSWORD', 'FAKKU_TOTP_SECRET',
-        'FAKKU_COLLECTION_URL', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD',
-        'SMTP_FROM', 'SMTP_TO', 'STORAGE_PRIMARY',
-    ]
+    to_place_only = os.getenv('TO_PLACE_ONLY', 'false').lower() in ('true', '1', 'yes')
+
+    if to_place_only:
+        required = [
+            'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD',
+            'SMTP_FROM', 'SMTP_TO', 'STORAGE_ROOT', 'STORAGE_PRIMARY',
+        ]
+    else:
+        required = [
+            'FAKKU_USERNAME', 'FAKKU_PASSWORD', 'FAKKU_TOTP_SECRET',
+            'FAKKU_COLLECTION_URL', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD',
+            'SMTP_FROM', 'SMTP_TO', 'STORAGE_ROOT', 'STORAGE_PRIMARY',
+        ]
     missing = [k for k in required if not os.getenv(k)]
     if missing:
         sys.exit(f"[config] Missing required env vars: {', '.join(missing)}")
 
     chrome_offset_raw = os.getenv('CHROME_OFFSET', '').split('#')[0].strip()
+
+    storage_root = os.getenv('STORAGE_ROOT')
+    to_place_dir = str(Path(storage_root) / 'ToPlace')
+    to_fix_manually_dir = str(Path(storage_root) / 'TO FIX MANUALLY')
 
     return Config(
         fakku_username=os.getenv('FAKKU_USERNAME'),
@@ -78,7 +96,10 @@ def load_config() -> Config:
         smtp_password=os.getenv('SMTP_PASSWORD'),
         smtp_from=os.getenv('SMTP_FROM'),
         smtp_to=os.getenv('SMTP_TO'),
+        storage_root=storage_root,
         storage_primary=os.getenv('STORAGE_PRIMARY', './downloaded'),
+        to_place_dir=to_place_dir,
+        to_fix_manually_dir=to_fix_manually_dir,
         done_file=os.getenv('DONE_FILE', './done.txt'),
         cookies_file=os.getenv('COOKIES_FILE', './cookies.pickle'),
         temp_dir=os.getenv('TEMP_DIR', './tmp'),
@@ -89,4 +110,5 @@ def load_config() -> Config:
         allowed_image_dimensions=_parse_dimensions(os.getenv('ALLOWED_IMAGE_DIMENSIONS', '')),
         max_retry=int(os.getenv('MAX_RETRY', '3')),
         chrome_offset=int(chrome_offset_raw) if chrome_offset_raw else None,
+        to_place_only=to_place_only,
     )

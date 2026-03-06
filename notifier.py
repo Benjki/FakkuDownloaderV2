@@ -121,6 +121,89 @@ def _book_card(r: dict) -> str:
     return '\n'.join(rows)
 
 
+def _toplace_card(r: dict) -> str:
+    """Card for a ToPlace report — similar to _book_card but adapted for placed files."""
+    if r.get('error'):
+        border = '#ef4444'  # red
+        card_style = (
+            f'border-left:4px solid {border};padding:10px 14px;margin:8px 0;'
+            f'background:#f9fafb;border-radius:0 6px 6px 0;font-family:sans-serif;'
+            f'font-size:13px;color:#1f2937;'
+        )
+        rows = [f'<div style="{card_style}">']
+        rows.append(
+            f'<div style="font-weight:700;font-size:14px;margin-bottom:4px;">'
+            f'{r["original_filename"]}</div>'
+        )
+        rows.append(
+            f'<div style="color:#ef4444;font-weight:600;">&#9888; ERROR: {r["error"]}</div>'
+        )
+        rows.append('</div>')
+        return '\n'.join(rows)
+
+    routing = r.get('routing', 'oneshot')
+    colour_map = {
+        'series':          '#22c55e',  # green
+        'oneshot':         '#3b82f6',  # blue
+        'missing_volumes': '#ef4444',  # red
+        'file_conflict':   '#ef4444',  # red
+    }
+    border = colour_map.get(routing, '#9ca3af')
+    card_style = (
+        f'border-left:4px solid {border};padding:10px 14px;margin:8px 0;'
+        f'background:#f9fafb;border-radius:0 6px 6px 0;font-family:sans-serif;'
+        f'font-size:13px;color:#1f2937;'
+    )
+
+    rows = [f'<div style="{card_style}">']
+    rows.append(
+        f'<div style="font-weight:700;font-size:14px;margin-bottom:4px;">'
+        f'{r["display_name"]}</div>'
+    )
+    rows.append(f'<div><b>Author:</b> {r.get("author") or "unknown"}</div>')
+    rows.append(f'<div><b>Original file:</b> {r["original_filename"]}</div>')
+
+    if routing == 'missing_volumes':
+        missing = r.get('missing_vol_nums', [])
+        vols = ', '.join(f'vol.{k}' for k in missing)
+        rows.append(
+            f'<div style="color:#ef4444;font-weight:600;">&#9888; MISSING PRECEDING VOLUMES '
+            f'({vols}) — placed in TO FIX MANUALLY/</div>'
+        )
+        rows.append(
+            f'<div><b>Series:</b> {r["series_name"]} vol.{r["volume_number"]}</div>'
+        )
+    elif routing == 'file_conflict':
+        rows.append(
+            '<div style="color:#ef4444;font-weight:600;">&#9888; FILE CONFLICT — '
+            'placed in TO FIX MANUALLY/</div>'
+        )
+    elif routing == 'series':
+        rows.append(
+            f'<div><b>Type:</b> Series — {r["series_name"]} vol.{r["volume_number"]}</div>'
+        )
+        rows.append(f'<div><b>Folder:</b> {r["series_dir"]}</div>')
+    else:  # oneshot
+        rows.append(
+            f'<div><b>Type:</b> One-shot → placed in {r["series_dir"]}</div>'
+        )
+
+    rows.append(f'<div><b>File:</b> {r["cbz_filename"]}</div>')
+    rows.append(f'<div><b>Destination:</b> {r["cbz_path"]}</div>')
+
+    move = r.get('oneshot_move')
+    if move:
+        rows.append(
+            f'<div style="color:#6b7280;margin-top:4px;">'
+            f'Moved vol.1 from one-shots:<br>'
+            f'&nbsp;&nbsp;Before: {move["from"]}<br>'
+            f'&nbsp;&nbsp;After:&nbsp; {move["to"]}</div>'
+        )
+
+    rows.append('</div>')
+    return '\n'.join(rows)
+
+
 # ---------------------------------------------------------------------------
 # Full HTML builder for success emails
 # ---------------------------------------------------------------------------
@@ -130,6 +213,7 @@ def _build_success_html(
     not_owned: list[dict],
     other_skipped: list[dict],
     elapsed: str,
+    toplace_reports: list[dict] | None = None,
 ) -> str:
     # Summary badge counts
     needs_attention = sum(
@@ -194,6 +278,29 @@ def _build_success_html(
             f'padding-left:18px;margin:0;">{items}</ul>'
         )
 
+    # ToPlace section
+    toplace_html = ''
+    if toplace_reports:
+        tp_placed = [r for r in toplace_reports if not r.get('error')]
+        tp_needs_attention = [r for r in tp_placed if r.get('routing') in ('missing_volumes', 'file_conflict')]
+        tp_errors = [r for r in toplace_reports if r.get('error')]
+
+        tp_badge_parts = [_badge(f'{len(tp_placed)} placed', '#22c55e')]
+        if tp_needs_attention:
+            tp_badge_parts.append(_badge(f'{len(tp_needs_attention)} needs attention', '#ef4444'))
+        if tp_errors:
+            tp_badge_parts.append(_badge(f'{len(tp_errors)} errors', '#ef4444'))
+        tp_banner = ''.join(tp_badge_parts)
+
+        tp_cards = '\n'.join(_toplace_card(r) for r in toplace_reports)
+        toplace_html = (
+            f'<div style="margin-top:24px;padding-top:16px;border-top:2px solid #e5e7eb;">'
+            f'<div style="{section_head_style}">ToPlace Processing</div>'
+            f'<div style="margin-bottom:10px;">{tp_banner}</div>'
+            f'{tp_cards}'
+            f'</div>'
+        )
+
     total_skipped = len(not_owned) + len(other_skipped)
     return f"""<!DOCTYPE html>
 <html>
@@ -232,6 +339,7 @@ def _build_success_html(
           {downloaded_html}
           {not_owned_html}
           {skipped_html}
+          {toplace_html}
         </td>
       </tr>
       <!-- footer -->
@@ -279,7 +387,7 @@ def _send(config: Config, subject: str, body: str, html: str | None = None) -> N
 # Public API
 # ---------------------------------------------------------------------------
 
-def send_success(config: Config, reports: list[dict], elapsed: str, dry_run: bool = False) -> None:
+def send_success(config: Config, reports: list[dict], elapsed: str, dry_run: bool = False, toplace_reports: list[dict] | None = None) -> None:
     downloaded = [r for r in reports if not r.get('skipped')]
     skipped    = [r for r in reports if r.get('skipped')]
 
@@ -289,11 +397,15 @@ def send_success(config: Config, reports: list[dict], elapsed: str, dry_run: boo
     not_owned_count   = len(not_owned)
     other_skipped_count = len(other_skipped)
 
+    tp_placed_count = len([r for r in (toplace_reports or []) if not r.get('error')]) if toplace_reports else 0
+
     subject = f'{"[DRY RUN] " if dry_run else ""}Run complete: {len(downloaded)} downloaded'
     if not_owned_count:
         subject += f', {not_owned_count} not owned'
     if other_skipped_count:
         subject += f', {other_skipped_count} skipped'
+    if tp_placed_count:
+        subject += f', {tp_placed_count} placed'
 
     # Plain-text fallback (unchanged from original)
     lines = [
@@ -359,7 +471,42 @@ def send_success(config: Config, reports: list[dict], elapsed: str, dry_run: boo
         for r in other_skipped:
             lines.append(f'  {r["url"]}  [{r.get("skip_reason", "unknown")}]')
 
-    html = _build_success_html(downloaded, not_owned, other_skipped, elapsed)
+    if toplace_reports:
+        lines += ['', '=' * 60, 'TOPLACE PROCESSING', '=' * 60]
+        for r in toplace_reports:
+            lines.append('')
+            if r.get('error'):
+                lines.append(f'  {r["original_filename"]}')
+                lines.append(f'  *** ERROR: {r["error"]}')
+                continue
+            lines.append(f'  {r["display_name"]}')
+            lines.append(f'  Author:   {r.get("author") or "unknown"}')
+            lines.append(f'  Original: {r["original_filename"]}')
+
+            routing = r.get('routing', 'oneshot')
+            if routing == 'missing_volumes':
+                missing = r.get('missing_vol_nums', [])
+                vols = ', '.join(f'vol.{k}' for k in missing)
+                lines.append(f'  Type:   *** MISSING PRECEDING VOLUMES ({vols}) — placed in TO FIX MANUALLY/')
+                lines.append(f'  Series: {r["series_name"]} vol.{r["volume_number"]}')
+            elif routing == 'file_conflict':
+                lines.append('  Type:   *** FILE CONFLICT — placed in TO FIX MANUALLY/')
+            elif routing == 'series':
+                lines.append(f'  Type:   Series — {r["series_name"]} vol.{r["volume_number"]}')
+                lines.append(f'  Folder: {r["series_dir"]}')
+            else:
+                lines.append(f'  Type:   One-shot → placed in {r["series_dir"]}')
+
+            lines.append(f'  File:   {r["cbz_filename"]}')
+            lines.append(f'  Dest:   {r["cbz_path"]}')
+
+            move = r.get('oneshot_move')
+            if move:
+                lines.append(f'  Moved vol.1 from one-shots:')
+                lines.append(f'    Before: {move["from"]}')
+                lines.append(f'    After:  {move["to"]}')
+
+    html = _build_success_html(downloaded, not_owned, other_skipped, elapsed, toplace_reports=toplace_reports)
     _send(config, subject, '\n'.join(lines), html=html)
 
 

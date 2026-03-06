@@ -24,6 +24,8 @@ _COVER_YYYYMMDD_RE = re.compile(r'^\d{8}$')        # 20200607
 
 _TITLE_VOLUME_RE = re.compile(r'^(.+?)\s+(\d+)$')
 
+TO_FIX_MANUALLY = 'TO FIX MANUALLY'
+
 
 class MetadataError(Exception):
     pass
@@ -349,7 +351,7 @@ def route_book(book: Book) -> str:
     4. default (one-shot) -> '<Letter>/%%%OneShots%%%'
     """
     if book.multi_collection or book.missing_volumes or book.file_conflict:
-        return 'TO FIX MANUALLY'
+        return TO_FIX_MANUALLY
     if book.is_cover:
         group = extract_cover_group(book.title)
         return str(Path('Covers') / group)

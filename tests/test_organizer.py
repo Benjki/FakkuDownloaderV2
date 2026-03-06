@@ -8,6 +8,7 @@ import pytest
 from book import Book
 from organizer import (
     MetadataError,
+    TO_FIX_MANUALLY,
     build_filename,
     check_and_move_oneshot,
     check_ownership,
@@ -103,19 +104,19 @@ class TestRouteBook:
 
     def test_multi_collection_routes_to_fix_manually(self):
         b = make_oneshot(multi_collection=True)
-        assert route_book(b) == 'TO FIX MANUALLY'
+        assert route_book(b) == TO_FIX_MANUALLY
 
     def test_multi_collection_takes_priority_over_cover(self):
         b = make_oneshot(pages=2, is_cover=True, multi_collection=True)
-        assert route_book(b) == 'TO FIX MANUALLY'
+        assert route_book(b) == TO_FIX_MANUALLY
 
     def test_missing_volumes_routes_to_fix_manually(self):
         b = make_series(missing_volumes=True)
-        assert route_book(b) == 'TO FIX MANUALLY'
+        assert route_book(b) == TO_FIX_MANUALLY
 
     def test_missing_volumes_takes_priority_over_series(self):
         b = make_series(series_name='My Series', volume_number=3, missing_volumes=True)
-        assert route_book(b) == 'TO FIX MANUALLY'
+        assert route_book(b) == TO_FIX_MANUALLY
 
 
 # ---------------------------------------------------------------------------
