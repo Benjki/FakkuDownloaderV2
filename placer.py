@@ -2,12 +2,13 @@
 
 import logging
 import re
+import zipfile
 from pathlib import Path
 
 from book import Book
 from config import Config
 from fix_names import process_filename
-from helper import first_letter, replace_illegal
+from helper import first_letter
 from organizer import (
     TO_FIX_MANUALLY,
     build_filename,
@@ -53,6 +54,13 @@ class Placer:
                 })
         return reports
 
+    @staticmethod
+    def _count_pages(filepath: Path) -> int:
+        """Count image files inside a ZIP/CBZ archive without extracting."""
+        image_exts = ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')
+        with zipfile.ZipFile(filepath, 'r') as zf:
+            return sum(1 for n in zf.namelist() if n.lower().endswith(image_exts))
+
     def place_book(self, filepath: Path, dry_run: bool = False) -> dict:
         """Process a single archive file from ToPlace/."""
         original_name = filepath.name
@@ -87,35 +95,35 @@ class Placer:
                     filepath.rename(new_path)
                     filepath = new_path
 
-        # Step 3: Series detection
+        # Step 3: Count pages and detect covers
+        pages = self._count_pages(filepath)
+        is_cover = pages <= 4
+        logger.info('%sPages: %d — %s', prefix, pages, 'cover' if is_cover else 'normal')
+
+        # Step 4: Series detection (skip for covers, same as downloader)
         series_name = None
         volume_number = None
         short_title = None
 
-        # Phase A: title heuristic
-        inferred = infer_series_from_title(title)
-        if inferred:
-            series_name, volume_number = inferred
-            short_title = compute_short_title(title, series_name)
-            logger.info('%sTitle heuristic: series="%s" vol.%d', prefix, series_name, volume_number)
+        if not is_cover:
+            # Phase A: title heuristic
+            inferred = infer_series_from_title(title)
+            if inferred:
+                series_name, volume_number = inferred
+                short_title = compute_short_title(title, series_name)
+                logger.info('%sTitle heuristic: series="%s" vol.%d', prefix, series_name, volume_number)
 
-        # Phase B: filesystem scan (only if series detected from title)
-        found_existing = False
-        if series_name and volume_number and volume_number >= 2:
-            found_existing = self._scan_for_existing_volumes(series_name, author, first_letter(title))
-            logger.info('%sFilesystem scan for existing volumes: %s', prefix, 'found' if found_existing else 'not found')
-
-        # Step 4: Build Book dataclass
+        # Step 5: Build Book dataclass
         book = Book(
             title=title,
             author=author,
-            pages=0,
+            pages=pages,
             tags=[],
             source_url='',
             series_name=series_name,
             volume_number=volume_number,
             short_title=short_title,
-            is_cover=False,
+            is_cover=is_cover,
             multi_collection=False,
             missing_volumes=False,
             file_conflict=False,
@@ -164,6 +172,8 @@ class Placer:
             routing = 'file_conflict'
         elif book.missing_volumes:
             routing = 'missing_volumes'
+        elif book.is_cover:
+            routing = 'cover'
         elif book.is_series():
             routing = 'series'
         else:
@@ -198,35 +208,6 @@ class Placer:
             'error': None,
             'source': 'toplace',
         }
-
-    def _scan_for_existing_volumes(self, title: str, author: str, letter: str) -> bool:
-        """Check if a matching file exists in OneShots or letter root."""
-        storage = Path(self._config.storage_primary)
-        oneshots_dir = storage / letter / '%%%OneShots%%%'
-        letter_dir = storage / letter
-
-        title_norm = title.lower().strip()
-        author_norm = author.lower().strip()
-
-        for search_dir in [oneshots_dir, letter_dir]:
-            if not search_dir.exists():
-                continue
-            for f in list(search_dir.glob('*.cbz')) + list(search_dir.glob('*.zip')):
-                if not f.is_file():
-                    continue
-                stem = f.stem
-                # Extract file's title and author from "Title [Author]" pattern
-                file_author = ''
-                m = re.match(r'^(.+?)\s*\[([^\]]+)\]\s*$', stem)
-                if m:
-                    file_title = m.group(1).strip().lower()
-                    file_author = m.group(2).strip().lower()
-                else:
-                    file_title = stem.strip().lower()
-
-                if file_author == author_norm and title_norm.startswith(file_title):
-                    return True
-        return False
 
     def _check_missing_volumes(self, book: Book, series_dir_rel: str) -> list[int]:
         """Check if all preceding volumes exist. Returns list of missing volume numbers."""

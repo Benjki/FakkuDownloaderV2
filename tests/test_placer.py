@@ -1,5 +1,6 @@
 """Tests for placer.py — ToPlace processor."""
 
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -38,10 +39,12 @@ def _make_config(tmp_path):
     )
 
 
-def _touch(directory: Path, name: str) -> Path:
-    """Create an empty file in the given directory."""
+def _touch(directory: Path, name: str, pages: int = 10) -> Path:
+    """Create a valid ZIP file with dummy image entries."""
     f = directory / name
-    f.write_bytes(b'fake cbz content')
+    with zipfile.ZipFile(f, 'w') as zf:
+        for i in range(pages):
+            zf.writestr(f'page_{i:03d}.png', b'fake image data')
     return f
 
 
@@ -103,6 +106,64 @@ class TestFixAndRename:
 
         assert len(reports) == 1
         assert reports[0]['cbz_filename'].endswith('.cbz')
+
+
+# ---------------------------------------------------------------------------
+# TestCoverRouting
+# ---------------------------------------------------------------------------
+
+class TestCoverRouting:
+    """Files with <= 4 pages are routed as covers."""
+
+    def test_cover_routed_to_covers_folder(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        toplace = Path(cfg.to_place_dir)
+        _touch(toplace, 'X-Eros Pinup #82 Kito Sakeru [Author].cbz', pages=3)
+
+        placer = Placer(cfg)
+        reports = placer.run()
+
+        assert len(reports) == 1
+        r = reports[0]
+        assert r['error'] is None
+        assert r['routing'] == 'cover'
+        dest = Path(r['cbz_path'])
+        assert dest.exists()
+        assert 'Covers' in str(dest)
+
+    def test_4_pages_is_cover(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        toplace = Path(cfg.to_place_dir)
+        _touch(toplace, 'Some Pinup [Artist].cbz', pages=4)
+
+        placer = Placer(cfg)
+        reports = placer.run()
+
+        assert reports[0]['routing'] == 'cover'
+
+    def test_5_pages_is_not_cover(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        toplace = Path(cfg.to_place_dir)
+        _touch(toplace, 'Some Story [Artist].cbz', pages=5)
+
+        placer = Placer(cfg)
+        reports = placer.run()
+
+        assert reports[0]['routing'] == 'oneshot'
+
+    def test_cover_skips_series_detection(self, tmp_path):
+        """A cover with a volume-like title should NOT be treated as a series."""
+        cfg = _make_config(tmp_path)
+        toplace = Path(cfg.to_place_dir)
+        _touch(toplace, 'Magazine Cover 2 [Artist].cbz', pages=2)
+
+        placer = Placer(cfg)
+        reports = placer.run()
+
+        r = reports[0]
+        assert r['routing'] == 'cover'
+        assert r['series_name'] is None
+        assert r['volume_number'] is None
 
 
 # ---------------------------------------------------------------------------
