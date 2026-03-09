@@ -32,8 +32,11 @@ pytest tests/test_organizer.py::TestRouteBook::test_series_routing
 ## Architecture
 
 ### Entry & configuration
-- **`main.py`** — parses `--dry-run` flag, calls `ensure_authenticated`, then `downloader.run()` or `downloader.run_dry_run()`.
-- **`config.py`** — `load_config()` reads all env vars and returns a `Config` dataclass. Validates required vars at startup; fails fast with a clear message.
+- **`main.py`** — two-phase execution:
+  1. **Phase 1** (FAKKU downloads): Browser → auth → `Downloader.run()` / `.run_dry_run()`. Skipped when `TO_PLACE_ONLY=true`.
+  2. **Phase 2** (ToPlace processing): `Placer.run()` — no browser needed. Always runs.
+  Combined email sent at end if either phase produced reports.
+- **`config.py`** — `load_config()` reads all env vars and returns a `Config` dataclass. Validates required vars at startup (fewer required when `TO_PLACE_ONLY=true`); fails fast with a clear message.
 
 ### Browser layer
 - **`browser.py`** — `Browser` wraps the Playwright context. Key behaviours:
@@ -63,6 +66,10 @@ pytest tests/test_organizer.py::TestRouteBook::test_series_routing
   - `check_and_move_oneshot(...)` — when a new series vol.≥2 arrives, retroactively moves vol.1 out of `%%%OneShots%%%`. Accepts `dry_run=True` to simulate without moving.
 - **`book.py`** — `Book` dataclass. Routing flags (`is_cover`, `multi_collection`, `missing_volumes`, `file_conflict`) are set by `downloader.py` before calling `route_book()`.
 
+### ToPlace pipeline
+- **`placer.py`** — `Placer` class. Processes `.zip`/`.cbz` archives dropped into `ToPlace/` (no browser needed). Per-file flow: fix filename → count pages → infer series from title → build `Book` → route → check missing volumes / file conflicts → move to destination. Shares routing logic with `organizer.py`.
+- **`fix_names.py`** — `process_filename(filename)` → `(new_filename, title, author)`. Parses bracket/paren conventions like `[Circle (Author)] Title [Extra] (Tag).zip` into `Title [Author].cbz`.
+
 ### Notifications
 - **`notifier.py`** — HTML email (inline CSS, `MIMEMultipart('alternative')` with plain-text fallback).
   - `send_success(config, reports, elapsed, dry_run=False)` — summary banner with coloured badge counts + one card per book.
@@ -77,8 +84,10 @@ pytest tests/test_organizer.py::TestRouteBook::test_series_routing
 
 **User-Agent is critical** — Never remove the explicit `user_agent` from `Browser.start()`. Without it, Playwright reports `HeadlessChrome` and FAKKU serves a stripped page.
 
-**`channel='chrome'`** — do NOT use. It causes Chrome to crash at startup in containers (SIGTRAP from crashpad handler) and also broke collection loading. Use Playwright's bundled Chromium; the explicit `user_agent` in `Browser.start()` handles fingerprinting.
+**`channel='chrome'`** — production uses `channel='chrome'` (real Chrome binary, not bundled Chromium). The Dockerfile installs it via `playwright install chrome --with-deps`. Chrome needs a writable `$HOME` for crashpad — solved by `ENV HOME=/tmp` in the Dockerfile. The k8s pod runs as `runAsUser: 1000`.
 
 **Timing** — All sleeps use jitter (`random.uniform`). `PAGE_WAIT`, `BOOK_WAIT` in the k8s cronjob override the code defaults — keep them in sync when changing defaults.
 
 **Cookie format** — Cookies are pickled in Playwright format (`expires` key, not Selenium's `expiry`). Do not mix V1 cookie files with V2.
+
+**`TO_PLACE_ONLY` mode** — When `TO_PLACE_ONLY=true`, Phase 1 (browser/FAKKU) is skipped entirely. Only the ToPlace pipeline runs. Fewer env vars are required (no FAKKU credentials).

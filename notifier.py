@@ -7,15 +7,7 @@ from config import Config
 
 SUBJECT_PREFIX = '[FakkuDL]'
 
-# Routing state -> left-border colour for book cards
-_ROUTING_COLOUR = {
-    'series':           '#22c55e',  # green
-    'oneshot':          '#3b82f6',  # blue
-    'cover':            '#9ca3af',  # grey
-    'multi_collection': '#ef4444',  # red
-    'missing_volumes':  '#ef4444',  # red
-    'file_conflict':    '#ef4444',  # red
-}
+_ATTENTION_ROUTINGS = ('multi_collection', 'missing_volumes', 'file_conflict')
 
 
 # ---------------------------------------------------------------------------
@@ -31,177 +23,406 @@ def _badge(text: str, bg: str) -> str:
     return f'<span style="{style}">{text}</span>'
 
 
-def _book_card(r: dict) -> str:
+def _sort_key(r: dict) -> str:
+    """Sort key: numbers first, then A-Z (case-insensitive)."""
+    name = r.get('display_name', r.get('original_filename', ''))
+    return name.lower()
+
+
+# ---------------------------------------------------------------------------
+# Downloaded section helpers
+# ---------------------------------------------------------------------------
+
+def _dl_attention_item(r: dict) -> str:
+    """Render a single downloaded book that needs attention."""
     routing = r['routing']
-    border = _ROUTING_COLOUR.get(routing, '#9ca3af')
-    card_style = (
-        f'border-left:4px solid {border};padding:10px 14px;margin:8px 0;'
-        f'background:#f9fafb;border-radius:0 6px 6px 0;font-family:sans-serif;'
-        f'font-size:13px;color:#1f2937;'
-    )
+    author = r.get('author') or 'unknown'
+    pages = r.get('pages', '?')
 
-    rows = [f'<div style="{card_style}">']
-    rows.append(
-        f'<div style="font-weight:700;font-size:14px;margin-bottom:4px;">'
-        f'{r["display_name"]}</div>'
-    )
-    author_val = r.get("author") or '<span style="color:#ef4444;">NOT FOUND</span>'
-    rows.append(f'<div><b>Author:</b> {author_val}</div>')
-    rows.append(f'<div><b>Pages:</b> {r["pages"]}</div>')
-
-    # Routing detail
-    if routing == 'multi_collection':
-        rows.append(
-            '<div style="color:#ef4444;font-weight:600;">&#9888; MULTIPLE COLLECTIONS — '
-            'placed in TO FIX MANUALLY/. Assign to the correct series manually.</div>'
-        )
-    elif routing == 'missing_volumes':
-        missing = r.get('missing_vol_nums', [])
-        vols = ', '.join(f'vol.{k}' for k in missing)
-        rows.append(
-            f'<div style="color:#ef4444;font-weight:600;">&#9888; MISSING PRECEDING VOLUMES '
-            f'({vols}) — placed in TO FIX MANUALLY/</div>'
-        )
-        rows.append(
-            f'<div><b>Series:</b> {r["series_name"]} vol.{r["volume_number"]}</div>'
-        )
-        rows.append(
-            '<div style="color:#6b7280;">Find/download the missing volumes, '
-            'then move this file manually.</div>'
-        )
-    elif routing == 'file_conflict':
-        conflict = r.get('conflicting_path', 'unknown')
-        rows.append(
-            '<div style="color:#ef4444;font-weight:600;">&#9888; FILE CONFLICT — '
-            'placed in TO FIX MANUALLY/</div>'
-        )
-        rows.append(f'<div><b>Conflict with:</b> {conflict}</div>')
-        rows.append(
-            '<div style="color:#6b7280;">A CBZ already exists at the destination. '
-            'Resolve the duplicate manually.</div>'
-        )
-    elif routing == 'cover':
-        rows.append(f'<div><b>Type:</b> Cover (≤4 pages) → placed in {r["series_dir"]}/</div>')
-    elif routing == 'series':
-        created_note = ' (new folder)' if r.get('series_dir_created') else ' (existing folder)'
-        rows.append(
-            f'<div><b>Type:</b> Series — {r["series_name"]} vol.{r["volume_number"]}</div>'
-        )
-        rows.append(f'<div><b>Folder:</b> {r["series_dir"]}{created_note}</div>')
-    else:  # oneshot
-        rows.append(
-            f'<div><b>Type:</b> One-shot → placed in {r["series_dir"]}</div>'
-        )
-
-    rows.append(f'<div><b>File:</b> {r["cbz_filename"]}</div>')
-
-    retries = r.get('page_retries', 0)
-    if retries:
-        rows.append(
-            f'<div style="color:#f97316;font-weight:600;">&#9888; {retries} page '
-            f'{"retry" if retries == 1 else "retries"} (timeout)</div>'
-        )
-
-    if not r.get('author'):
-        rows.append(
-            '<div style="color:#ef4444;">&#9888; No author found — '
-            'filename has no [Author] tag</div>'
-        )
-
-    move = r.get('oneshot_move')
-    if move:
-        rows.append(
-            f'<div style="color:#6b7280;margin-top:4px;">'
-            f'Moved vol.1 from one-shots:<br>'
-            f'&nbsp;&nbsp;Before: {move["from"]}<br>'
-            f'&nbsp;&nbsp;After:&nbsp; {move["to"]}</div>'
-        )
-
-    rows.append('</div>')
-    return '\n'.join(rows)
-
-
-def _toplace_card(r: dict) -> str:
-    """Card for a ToPlace report — similar to _book_card but adapted for placed files."""
-    if r.get('error'):
-        border = '#ef4444'  # red
-        card_style = (
-            f'border-left:4px solid {border};padding:10px 14px;margin:8px 0;'
-            f'background:#f9fafb;border-radius:0 6px 6px 0;font-family:sans-serif;'
-            f'font-size:13px;color:#1f2937;'
-        )
-        rows = [f'<div style="{card_style}">']
-        rows.append(
-            f'<div style="font-weight:700;font-size:14px;margin-bottom:4px;">'
-            f'{r["original_filename"]}</div>'
-        )
-        rows.append(
-            f'<div style="color:#ef4444;font-weight:600;">&#9888; ERROR: {r["error"]}</div>'
-        )
-        rows.append('</div>')
-        return '\n'.join(rows)
-
-    routing = r.get('routing', 'oneshot')
-    colour_map = {
-        'series':          '#22c55e',  # green
-        'oneshot':         '#3b82f6',  # blue
-        'missing_volumes': '#ef4444',  # red
-        'file_conflict':   '#ef4444',  # red
-    }
-    border = colour_map.get(routing, '#9ca3af')
-    card_style = (
-        f'border-left:4px solid {border};padding:10px 14px;margin:8px 0;'
-        f'background:#f9fafb;border-radius:0 6px 6px 0;font-family:sans-serif;'
-        f'font-size:13px;color:#1f2937;'
-    )
-
-    rows = [f'<div style="{card_style}">']
-    rows.append(
-        f'<div style="font-weight:700;font-size:14px;margin-bottom:4px;">'
-        f'{r["display_name"]}</div>'
-    )
-    rows.append(f'<div><b>Author:</b> {r.get("author") or "unknown"}</div>')
-    rows.append(f'<div><b>Original file:</b> {r["original_filename"]}</div>')
+    lines = [
+        f'<div style="font-size:13px;font-weight:700;color:#1f2937;">'
+        f'{r["display_name"]} '
+        f'<span style="font-weight:400;color:#6b7280;font-size:12px;">'
+        f'&middot; {author} &middot; {pages} pg</span></div>'
+    ]
 
     if routing == 'missing_volumes':
         missing = r.get('missing_vol_nums', [])
         vols = ', '.join(f'vol.{k}' for k in missing)
-        rows.append(
-            f'<div style="color:#ef4444;font-weight:600;">&#9888; MISSING PRECEDING VOLUMES '
-            f'({vols}) — placed in TO FIX MANUALLY/</div>'
+        lines.append(
+            f'<div style="font-size:12px;color:#dc2626;margin-top:3px;">'
+            f'MISSING VOLUMES ({vols}) &mdash; {r["series_name"]} vol.{r["volume_number"]}</div>'
         )
-        rows.append(
-            f'<div><b>Series:</b> {r["series_name"]} vol.{r["volume_number"]}</div>'
+    elif routing == 'multi_collection':
+        lines.append(
+            '<div style="font-size:12px;color:#dc2626;margin-top:3px;">'
+            'MULTIPLE COLLECTIONS &mdash; assign to correct series manually</div>'
         )
     elif routing == 'file_conflict':
-        rows.append(
-            '<div style="color:#ef4444;font-weight:600;">&#9888; FILE CONFLICT — '
-            'placed in TO FIX MANUALLY/</div>'
+        conflict = r.get('conflicting_path', 'unknown')
+        lines.append(
+            '<div style="font-size:12px;color:#dc2626;margin-top:3px;">'
+            'FILE CONFLICT &mdash; CBZ already exists at destination</div>'
         )
-    elif routing == 'series':
-        rows.append(
-            f'<div><b>Type:</b> Series — {r["series_name"]} vol.{r["volume_number"]}</div>'
+        lines.append(
+            f'<div style="font-size:11px;color:#6b7280;margin-top:2px;">'
+            f'Conflict: {conflict}</div>'
         )
-        rows.append(f'<div><b>Folder:</b> {r["series_dir"]}</div>')
+
+    lines.append(
+        f'<div style="font-size:11px;color:#9ca3af;margin-top:2px;">'
+        f'TO FIX MANUALLY/ &middot; {r["cbz_filename"]}</div>'
+    )
+
+    return '\n'.join(lines)
+
+
+def _dl_table_row(r: dict, odd: bool) -> str:
+    """Render a single OK downloaded book as a table row."""
+    bg = 'background:#f9fafb;' if odd else ''
+    routing = r.get('routing', 'oneshot')
+
+    # Title cell — may include warnings
+    title_parts = [r['display_name']]
+    if not r.get('author'):
+        title_parts.append(
+            '<span style="color:#ef4444;font-size:11px;margin-left:4px;">'
+            '&#9888; no author</span>'
+        )
+    retries = r.get('page_retries', 0)
+    if retries:
+        label = 'retry' if retries == 1 else 'retries'
+        title_parts.append(
+            f'<span style="color:#f97316;font-size:11px;margin-left:4px;">'
+            f'&#9888; {retries} {label}</span>'
+        )
+    title_html = ''.join(title_parts)
+
+    # Author cell
+    if r.get('author'):
+        author_html = f'<td style="padding:8px 12px;color:#6b7280;">{r["author"]}</td>'
+    else:
+        author_html = '<td style="padding:8px 12px;color:#ef4444;font-style:italic;">NOT FOUND</td>'
+
+    # Pages cell
+    pages_html = f'<td style="padding:8px 8px;text-align:center;color:#6b7280;">{r.get("pages", "?")}</td>'
+
+    # Destination cell
+    if routing == 'series':
+        new_tag = ' <span style="color:#22c55e;font-weight:600;font-size:10px;">(new)</span>' if r.get('series_dir_created') else ''
+        dest = f'{r["series_dir"]}/{new_tag} &middot; vol.{r["volume_number"]}'
+    elif routing == 'cover':
+        dest = f'{r["series_dir"]}/'
     else:  # oneshot
-        rows.append(
-            f'<div><b>Type:</b> One-shot → placed in {r["series_dir"]}</div>'
-        )
+        dest = f'{r["series_dir"]}/'
+    dest_html = f'<td style="padding:8px 12px;color:#6b7280;">{dest}</td>'
 
-    rows.append(f'<div><b>File:</b> {r["cbz_filename"]}</div>')
-    rows.append(f'<div><b>Destination:</b> {r["cbz_path"]}</div>')
+    row = (
+        f'<tr style="{bg}border-bottom:1px solid #e5e7eb;">'
+        f'<td style="padding:8px 12px;font-weight:600;">{title_html}</td>'
+        f'{author_html}{pages_html}{dest_html}'
+        f'</tr>'
+    )
 
+    # Oneshot move sub-row
     move = r.get('oneshot_move')
     if move:
-        rows.append(
-            f'<div style="color:#6b7280;margin-top:4px;">'
-            f'Moved vol.1 from one-shots:<br>'
-            f'&nbsp;&nbsp;Before: {move["from"]}<br>'
-            f'&nbsp;&nbsp;After:&nbsp; {move["to"]}</div>'
+        row += (
+            f'<tr style="background:#f0fdf4;border-bottom:1px solid #e5e7eb;">'
+            f'<td colspan="4" style="padding:4px 12px 8px;font-size:11px;color:#6b7280;">'
+            f'<b style="color:#374151;">{r["display_name"]}:</b> '
+            f'&#8618; Moved vol.1 from OneShots:<br>'
+            f'&nbsp;&nbsp;From: {move["from"]}<br>'
+            f'&nbsp;&nbsp;To: {move["to"]}'
+            f'</td></tr>'
         )
 
-    rows.append('</div>')
-    return '\n'.join(rows)
+    return row
+
+
+def _group_header(label: str, count: int, border_color: str, bg_color: str, text_color: str) -> str:
+    return (
+        f'<div style="background:{bg_color};border-left:4px solid {border_color};'
+        f'padding:3px 12px;margin-bottom:8px;border-radius:0 4px 4px 0;">'
+        f'<span style="font-size:12px;font-weight:700;color:{text_color};'
+        f'text-transform:uppercase;letter-spacing:0.5px;">{label} ({count})</span>'
+        f'</div>'
+    )
+
+
+def _build_downloaded_html(downloaded: list[dict]) -> str:
+    """Build the full Downloaded section with grouped layout."""
+    if not downloaded:
+        return ''
+
+    attention = sorted(
+        [r for r in downloaded if r['routing'] in _ATTENTION_ROUTINGS],
+        key=_sort_key,
+    )
+    series = sorted(
+        [r for r in downloaded if r['routing'] == 'series' and r['routing'] not in _ATTENTION_ROUTINGS],
+        key=_sort_key,
+    )
+    oneshots = sorted(
+        [r for r in downloaded if r['routing'] == 'oneshot'],
+        key=_sort_key,
+    )
+    covers = sorted(
+        [r for r in downloaded if r['routing'] == 'cover'],
+        key=_sort_key,
+    )
+
+    parts = [
+        '<div style="font-family:sans-serif;font-size:15px;font-weight:700;color:#374151;'
+        f'margin:0 0 16px;border-bottom:2px solid #1f2937;padding-bottom:6px;">'
+        f'Downloaded ({len(downloaded)})</div>'
+    ]
+
+    # Attention box
+    if attention:
+        items_html = []
+        for i, r in enumerate(attention):
+            border = 'border-bottom:1px solid #fecaca;' if i < len(attention) - 1 else ''
+            items_html.append(
+                f'<div style="padding:8px 0;{border}">'
+                f'{_dl_attention_item(r)}</div>'
+            )
+        parts.append(
+            '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;'
+            'padding:14px 16px;margin-bottom:20px;">'
+            '<div style="font-size:13px;font-weight:700;color:#dc2626;margin-bottom:10px;'
+            f'text-transform:uppercase;letter-spacing:0.5px;">&#9888; Needs Attention ({len(attention)})</div>'
+            + '\n'.join(items_html)
+            + '</div>'
+        )
+
+    # Series group
+    if series:
+        parts.append(_group_header('Series', len(series), '#22c55e', '#f0fdf4', '#16a34a'))
+        rows = ''.join(_dl_table_row(r, i % 2 == 1) for i, r in enumerate(series))
+        parts.append(
+            '<table width="100%" cellpadding="0" cellspacing="0" '
+            'style="font-size:12px;color:#1f2937;border-collapse:collapse;margin-bottom:20px;">'
+            f'{rows}</table>'
+        )
+
+    # One-shots group
+    if oneshots:
+        parts.append(_group_header('One-shots', len(oneshots), '#3b82f6', '#eff6ff', '#2563eb'))
+        rows = ''.join(_dl_table_row(r, i % 2 == 1) for i, r in enumerate(oneshots))
+        parts.append(
+            '<table width="100%" cellpadding="0" cellspacing="0" '
+            'style="font-size:12px;color:#1f2937;border-collapse:collapse;margin-bottom:20px;">'
+            f'{rows}</table>'
+        )
+
+    # Covers group
+    if covers:
+        parts.append(_group_header('Covers', len(covers), '#9ca3af', '#f3f4f6', '#6b7280'))
+        rows = ''.join(_dl_table_row(r, i % 2 == 1) for i, r in enumerate(covers))
+        parts.append(
+            '<table width="100%" cellpadding="0" cellspacing="0" '
+            'style="font-size:12px;color:#1f2937;border-collapse:collapse;margin-bottom:20px;">'
+            f'{rows}</table>'
+        )
+
+    return '\n'.join(parts)
+
+
+# ---------------------------------------------------------------------------
+# ToPlace section helpers
+# ---------------------------------------------------------------------------
+
+def _tp_attention_item(r: dict) -> str:
+    """Render a single toplace item that needs attention (error or routing issue)."""
+    if r.get('error'):
+        lines = [
+            f'<div style="font-size:13px;font-weight:700;color:#1f2937;">{r["original_filename"]}</div>',
+            f'<div style="font-size:12px;color:#dc2626;margin-top:3px;">ERROR: {r["error"]}</div>',
+            f'<div style="font-size:11px;color:#9ca3af;margin-top:2px;">Original: {r["original_filename"]}</div>',
+        ]
+        return '\n'.join(lines)
+
+    routing = r.get('routing', 'oneshot')
+    author = r.get('author') or 'unknown'
+    pages = r.get('pages', '?')
+
+    lines = [
+        f'<div style="font-size:13px;font-weight:700;color:#1f2937;">'
+        f'{r["display_name"]} '
+        f'<span style="font-weight:400;color:#6b7280;font-size:12px;">'
+        f'&middot; {author} &middot; {pages} pg</span></div>'
+    ]
+
+    if routing == 'missing_volumes':
+        missing = r.get('missing_vol_nums', [])
+        vols = ', '.join(f'vol.{k}' for k in missing)
+        lines.append(
+            f'<div style="font-size:12px;color:#dc2626;margin-top:3px;">'
+            f'MISSING VOLUMES ({vols}) &mdash; {r["series_name"]} vol.{r["volume_number"]}</div>'
+        )
+    elif routing == 'file_conflict':
+        lines.append(
+            '<div style="font-size:12px;color:#dc2626;margin-top:3px;">'
+            'FILE CONFLICT &mdash; CBZ already exists at destination</div>'
+        )
+
+    lines.append(
+        f'<div style="font-size:11px;color:#9ca3af;margin-top:2px;">'
+        f'TO FIX MANUALLY/ &middot; {r["cbz_filename"]}</div>'
+    )
+    lines.append(
+        f'<div style="font-size:11px;color:#9ca3af;margin-top:2px;">'
+        f'Original: {r["original_filename"]}</div>'
+    )
+
+    return '\n'.join(lines)
+
+
+def _tp_table_row(r: dict, odd: bool) -> str:
+    """Render a single OK toplace book as a table row + original filename sub-row."""
+    bg = 'background:#f9fafb;' if odd else ''
+    routing = r.get('routing', 'oneshot')
+
+    # Title cell
+    title_parts = [r['display_name']]
+    if not r.get('author'):
+        title_parts.append(
+            '<span style="color:#ef4444;font-size:11px;margin-left:4px;">'
+            '&#9888; no author</span>'
+        )
+    title_html = ''.join(title_parts)
+
+    # Author cell
+    if r.get('author'):
+        author_html = f'<td style="padding:8px 12px;color:#6b7280;">{r["author"]}</td>'
+    else:
+        author_html = '<td style="padding:8px 12px;color:#ef4444;font-style:italic;">NOT FOUND</td>'
+
+    # Pages cell
+    pages_html = f'<td style="padding:8px 8px;text-align:center;color:#6b7280;">{r.get("pages", "?")}</td>'
+
+    # Destination cell
+    if routing == 'series':
+        dest = f'{r["series_dir"]}/ &middot; vol.{r["volume_number"]}'
+    else:  # oneshot
+        dest = f'{r["series_dir"]}/'
+    dest_html = f'<td style="padding:8px 12px;color:#6b7280;">{dest}</td>'
+
+    row = (
+        f'<tr style="{bg}border-bottom:1px solid #e5e7eb;">'
+        f'<td style="padding:8px 12px;font-weight:600;">{title_html}</td>'
+        f'{author_html}{pages_html}{dest_html}'
+        f'</tr>'
+    )
+
+    # Original filename sub-row
+    row += (
+        f'<tr>'
+        f'<td colspan="4" style="padding:2px 12px 8px;font-size:11px;color:#9ca3af;">'
+        f'Original: {r["original_filename"]} &rarr; {r["cbz_filename"]}</td>'
+        f'</tr>'
+    )
+
+    # Oneshot move sub-row
+    move = r.get('oneshot_move')
+    if move:
+        row += (
+            f'<tr style="background:#f0fdf4;border-bottom:1px solid #e5e7eb;">'
+            f'<td colspan="4" style="padding:4px 12px 8px;font-size:11px;color:#6b7280;">'
+            f'<b style="color:#374151;">{r["display_name"]}:</b> '
+            f'&#8618; Moved vol.1 from OneShots:<br>'
+            f'&nbsp;&nbsp;From: {move["from"]}<br>'
+            f'&nbsp;&nbsp;To: {move["to"]}'
+            f'</td></tr>'
+        )
+
+    return row
+
+
+def _build_toplace_html(toplace_reports: list[dict]) -> str:
+    """Build the full ToPlace section with grouped layout."""
+    if not toplace_reports:
+        return ''
+
+    errors = sorted(
+        [r for r in toplace_reports if r.get('error')],
+        key=lambda r: r.get('original_filename', '').lower(),
+    )
+    placed = [r for r in toplace_reports if not r.get('error')]
+    attention = sorted(
+        [r for r in placed if r.get('routing') in _ATTENTION_ROUTINGS],
+        key=_sort_key,
+    )
+    ok_placed = [r for r in placed if r.get('routing') not in _ATTENTION_ROUTINGS]
+    series = sorted(
+        [r for r in ok_placed if r.get('routing') == 'series'],
+        key=_sort_key,
+    )
+    oneshots = sorted(
+        [r for r in ok_placed if r.get('routing') in ('oneshot', None)],
+        key=_sort_key,
+    )
+
+    all_attention = errors + attention
+    ok_count = len(ok_placed)
+
+    parts = [
+        '<div style="margin-top:28px;padding-top:20px;border-top:2px solid #e5e7eb;">',
+        '<div style="font-family:sans-serif;font-size:15px;font-weight:700;color:#374151;'
+        f'margin:0 0 16px;border-bottom:2px solid #1f2937;padding-bottom:6px;">'
+        f'ToPlace Processing ({len(toplace_reports)})</div>',
+    ]
+
+    # Badges
+    badge_parts = [_badge(f'{ok_count} placed', '#22c55e')]
+    if attention:
+        badge_parts.append(_badge(f'{len(attention)} needs attention', '#ef4444'))
+    if errors:
+        label = 'error' if len(errors) == 1 else 'errors'
+        badge_parts.append(_badge(f'{len(errors)} {label}', '#ef4444'))
+    parts.append(f'<div style="margin-bottom:12px;">{"".join(badge_parts)}</div>')
+
+    # Attention box (errors + routing issues)
+    if all_attention:
+        items_html = []
+        for i, r in enumerate(all_attention):
+            border = 'border-bottom:1px solid #fecaca;' if i < len(all_attention) - 1 else ''
+            items_html.append(
+                f'<div style="padding:8px 0;{border}">'
+                f'{_tp_attention_item(r)}</div>'
+            )
+        parts.append(
+            '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;'
+            'padding:14px 16px;margin-bottom:20px;">'
+            '<div style="font-size:13px;font-weight:700;color:#dc2626;margin-bottom:10px;'
+            f'text-transform:uppercase;letter-spacing:0.5px;">&#9888; Needs Attention ({len(all_attention)})</div>'
+            + '\n'.join(items_html)
+            + '</div>'
+        )
+
+    # Series group
+    if series:
+        parts.append(_group_header('Series', len(series), '#22c55e', '#f0fdf4', '#16a34a'))
+        rows = ''.join(_tp_table_row(r, i % 2 == 1) for i, r in enumerate(series))
+        parts.append(
+            '<table width="100%" cellpadding="0" cellspacing="0" '
+            'style="font-size:12px;color:#1f2937;border-collapse:collapse;margin-bottom:16px;">'
+            f'{rows}</table>'
+        )
+
+    # One-shots group
+    if oneshots:
+        parts.append(_group_header('One-shots', len(oneshots), '#3b82f6', '#eff6ff', '#2563eb'))
+        rows = ''.join(_tp_table_row(r, i % 2 == 1) for i, r in enumerate(oneshots))
+        parts.append(
+            '<table width="100%" cellpadding="0" cellspacing="0" '
+            'style="font-size:12px;color:#1f2937;border-collapse:collapse;">'
+            f'{rows}</table>'
+        )
+
+    parts.append('</div>')
+    return '\n'.join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +439,8 @@ def _build_success_html(
     # Summary badge counts
     needs_attention = sum(
         1 for r in downloaded
-        if r['routing'] in ('multi_collection', 'missing_volumes', 'file_conflict')
+        if r['routing'] in _ATTENTION_ROUTINGS
     )
-
     total_retries = sum(r.get('page_retries', 0) for r in downloaded)
 
     banner_parts = [_badge(f'{len(downloaded)} downloaded', '#22c55e')]
@@ -232,93 +452,61 @@ def _build_success_html(
         banner_parts.append(_badge(f'{len(not_owned)} not owned', '#f97316'))
     if other_skipped:
         banner_parts.append(_badge(f'{len(other_skipped)} skipped', '#6b7280'))
-
     banner_html = ''.join(banner_parts)
 
-    section_head_style = (
-        'font-family:sans-serif;font-size:15px;font-weight:700;'
-        'color:#374151;margin:20px 0 6px;border-bottom:1px solid #e5e7eb;'
-        'padding-bottom:4px;'
-    )
-
-    # Downloaded cards
-    downloaded_html = ''
-    if downloaded:
-        cards = '\n'.join(_book_card(r) for r in downloaded)
-        downloaded_html = (
-            f'<div style="{section_head_style}">Downloaded</div>'
-            f'{cards}'
-        )
+    # Downloaded section
+    downloaded_html = _build_downloaded_html(downloaded)
 
     # Not owned
     not_owned_html = ''
     if not_owned:
         items = ''.join(
-            f'<li style="margin:4px 0;">&#9888;&nbsp;<b>{r["url"]}</b> — '
-            f'not owned at download time, check your subscription.</li>'
+            f'<div style="font-size:12px;color:#92400e;padding-left:8px;margin-bottom:4px;">'
+            f'&#9888; {r["url"]} &mdash; not owned at download time, check your subscription.</div>'
             for r in not_owned
         )
         not_owned_html = (
-            f'<div style="{section_head_style}">Not Owned (will retry next run)</div>'
-            f'<ul style="font-family:sans-serif;font-size:13px;color:#92400e;'
-            f'padding-left:18px;margin:0;">{items}</ul>'
+            '<div style="font-family:sans-serif;font-size:12px;font-weight:700;color:#92400e;'
+            'margin:16px 0 6px;padding-bottom:4px;border-bottom:1px solid #e5e7eb;">'
+            'Not Owned (will retry next run)</div>'
+            f'{items}'
         )
 
     # Other skipped
     skipped_html = ''
     if other_skipped:
         items = ''.join(
-            f'<li style="margin:4px 0;">{r["url"]} '
-            f'[{r.get("skip_reason", "unknown")}]</li>'
+            f'<div style="font-size:12px;color:#6b7280;padding-left:8px;">'
+            f'{r["url"]} &nbsp;[{r.get("skip_reason", "unknown")}]</div>'
             for r in other_skipped
         )
         skipped_html = (
-            f'<div style="{section_head_style}">Skipped</div>'
-            f'<ul style="font-family:sans-serif;font-size:13px;color:#6b7280;'
-            f'padding-left:18px;margin:0;">{items}</ul>'
+            '<div style="font-family:sans-serif;font-size:12px;font-weight:700;color:#6b7280;'
+            'margin:16px 0 6px;padding-bottom:4px;border-bottom:1px solid #e5e7eb;">'
+            'Skipped</div>'
+            f'{items}'
         )
 
     # ToPlace section
-    toplace_html = ''
-    if toplace_reports:
-        tp_placed = [r for r in toplace_reports if not r.get('error')]
-        tp_needs_attention = [r for r in tp_placed if r.get('routing') in ('missing_volumes', 'file_conflict')]
-        tp_errors = [r for r in toplace_reports if r.get('error')]
+    toplace_html = _build_toplace_html(toplace_reports) if toplace_reports else ''
 
-        tp_badge_parts = [_badge(f'{len(tp_placed)} placed', '#22c55e')]
-        if tp_needs_attention:
-            tp_badge_parts.append(_badge(f'{len(tp_needs_attention)} needs attention', '#ef4444'))
-        if tp_errors:
-            tp_badge_parts.append(_badge(f'{len(tp_errors)} errors', '#ef4444'))
-        tp_banner = ''.join(tp_badge_parts)
-
-        tp_cards = '\n'.join(_toplace_card(r) for r in toplace_reports)
-        toplace_html = (
-            f'<div style="margin-top:24px;padding-top:16px;border-top:2px solid #e5e7eb;">'
-            f'<div style="{section_head_style}">ToPlace Processing</div>'
-            f'<div style="margin-bottom:10px;">{tp_banner}</div>'
-            f'{tp_cards}'
-            f'</div>'
-        )
-
-    total_skipped = len(not_owned) + len(other_skipped)
     return f"""<!DOCTYPE html>
 <html>
 <body style="margin:0;padding:0;background:#f3f4f6;">
 <table width="100%" cellpadding="0" cellspacing="0"
        style="background:#f3f4f6;padding:24px 0;">
   <tr><td>
-    <table width="600" align="center" cellpadding="0" cellspacing="0"
+    <table width="700" align="center" cellpadding="0" cellspacing="0"
            style="background:#ffffff;border-radius:8px;
                   box-shadow:0 1px 3px rgba(0,0,0,.1);
-                  max-width:600px;width:100%;">
+                  max-width:700px;width:100%;">
       <!-- header bar -->
       <tr>
         <td style="background:#1f2937;padding:16px 20px;border-radius:8px 8px 0 0;">
           <span style="font-family:sans-serif;font-size:18px;font-weight:700;
                        color:#ffffff;">FakkuDownloader</span>
           <span style="font-family:sans-serif;font-size:13px;color:#9ca3af;
-                       margin-left:10px;">run complete</span>
+                       margin-left:10px;">run complete &middot; {elapsed}</span>
         </td>
       </tr>
       <!-- summary banner -->
@@ -326,20 +514,80 @@ def _build_success_html(
         <td style="padding:14px 20px;background:#f9fafb;
                    border-bottom:1px solid #e5e7eb;">
           {banner_html}
-          <span style="font-family:sans-serif;font-size:12px;color:#6b7280;
-                       margin-left:8px;">Elapsed: {elapsed}</span>
         </td>
       </tr>
       <!-- body -->
       <tr>
-        <td style="padding:16px 20px;">
-          <p style="font-family:sans-serif;font-size:13px;color:#374151;margin:0 0 12px;">
-            {len(downloaded)} book(s) downloaded, {total_skipped} skipped.
-          </p>
+        <td style="padding:20px 24px;font-family:sans-serif;">
           {downloaded_html}
           {not_owned_html}
           {skipped_html}
           {toplace_html}
+        </td>
+      </tr>
+      <!-- footer -->
+      <tr>
+        <td style="padding:12px 20px;background:#f9fafb;border-radius:0 0 8px 8px;
+                   border-top:1px solid #e5e7eb;">
+          <span style="font-family:sans-serif;font-size:11px;color:#9ca3af;">
+            Generated by FakkuDownloaderV2
+          </span>
+          <span style="float:right;font-family:sans-serif;font-size:11px;color:#9ca3af;">
+            <span style="display:inline-block;width:8px;height:8px;background:#22c55e;border-radius:2px;margin-right:2px;vertical-align:middle;"></span>Series &nbsp;
+            <span style="display:inline-block;width:8px;height:8px;background:#3b82f6;border-radius:2px;margin-right:2px;vertical-align:middle;"></span>One-shot &nbsp;
+            <span style="display:inline-block;width:8px;height:8px;background:#9ca3af;border-radius:2px;margin-right:2px;vertical-align:middle;"></span>Cover &nbsp;
+            <span style="display:inline-block;width:8px;height:8px;background:#ef4444;border-radius:2px;margin-right:2px;vertical-align:middle;"></span>Attention
+          </span>
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+</table>
+</body>
+</html>"""
+
+
+# ---------------------------------------------------------------------------
+# Error email HTML builder
+# ---------------------------------------------------------------------------
+
+def _build_error_html(
+    url: str,
+    location: str,
+    error: str,
+    trace: str,
+    completed: list[dict],
+) -> str:
+    completed_html = ''
+    if completed:
+        completed_html = _build_downloaded_html(completed)
+
+    return f"""<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background:#f3f4f6;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:24px 0;">
+  <tr><td>
+    <table width="700" align="center" cellpadding="0" cellspacing="0"
+           style="background:#ffffff;border-radius:8px;
+                  box-shadow:0 1px 3px rgba(0,0,0,.1);max-width:700px;width:100%;">
+      <tr>
+        <td style="background:#991b1b;padding:16px 20px;border-radius:8px 8px 0 0;">
+          <span style="font-family:sans-serif;font-size:18px;font-weight:700;
+                       color:#ffffff;">FakkuDownloader &mdash; ERROR</span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:20px 24px;font-family:sans-serif;font-size:13px;color:#1f2937;">
+          <p style="margin:0 0 8px;"><b>URL:</b> {url}</p>
+          <p style="margin:0 0 8px;"><b>Location:</b> {location}</p>
+          <p style="margin:0 0 16px;color:#ef4444;font-weight:600;">
+            <b>Error:</b> {error}
+          </p>
+          <p style="margin:0 0 4px;font-weight:600;">Traceback:</p>
+          <pre style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px;
+                      padding:12px;font-size:12px;overflow-x:auto;
+                      white-space:pre-wrap;word-break:break-all;">{trace}</pre>
+          {completed_html}
         </td>
       </tr>
       <!-- footer -->
@@ -520,7 +768,6 @@ def send_error(
 ) -> None:
     location = f'page {page}' if page else 'metadata stage'
     completed = [r for r in (reports or []) if not r.get('skipped')]
-    skipped   = [r for r in (reports or []) if r.get('skipped')]
 
     body_lines = [
         'Run halted due to an unrecoverable error.',
@@ -537,52 +784,7 @@ def send_error(
         for r in completed:
             body_lines.append(f'  {r["display_name"]}  →  {r.get("cbz_path", "")}')
 
-    section_head_style = (
-        'font-family:sans-serif;font-size:15px;font-weight:700;'
-        'color:#374151;margin:20px 0 6px;border-bottom:1px solid #e5e7eb;padding-bottom:4px;'
-    )
-    completed_html = ''
-    if completed:
-        cards = '\n'.join(_book_card(r) for r in completed)
-        completed_html = (
-            f'<div style="{section_head_style}">'
-            f'Completed before error ({len(completed)} book(s))</div>'
-            f'{cards}'
-        )
-
-    html = f"""<!DOCTYPE html>
-<html>
-<body style="margin:0;padding:0;background:#f3f4f6;">
-<table width="100%" cellpadding="0" cellspacing="0" style="padding:24px 0;">
-  <tr><td>
-    <table width="600" align="center" cellpadding="0" cellspacing="0"
-           style="background:#ffffff;border-radius:8px;
-                  box-shadow:0 1px 3px rgba(0,0,0,.1);max-width:600px;width:100%;">
-      <tr>
-        <td style="background:#991b1b;padding:16px 20px;border-radius:8px 8px 0 0;">
-          <span style="font-family:sans-serif;font-size:18px;font-weight:700;
-                       color:#ffffff;">FakkuDownloader — ERROR</span>
-        </td>
-      </tr>
-      <tr>
-        <td style="padding:20px;font-family:sans-serif;font-size:13px;color:#1f2937;">
-          <p style="margin:0 0 8px;"><b>URL:</b> {url}</p>
-          <p style="margin:0 0 8px;"><b>Location:</b> {location}</p>
-          <p style="margin:0 0 16px;color:#ef4444;font-weight:600;">
-            <b>Error:</b> {error}
-          </p>
-          <p style="margin:0 0 4px;font-weight:600;">Traceback:</p>
-          <pre style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px;
-                      padding:12px;font-size:12px;overflow-x:auto;
-                      white-space:pre-wrap;word-break:break-all;">{trace}</pre>
-          {completed_html}
-        </td>
-      </tr>
-    </table>
-  </td></tr>
-</table>
-</body>
-</html>"""
+    html = _build_error_html(url, location, error, trace, completed)
     _send(config, 'ERROR: Run halted', '\n'.join(body_lines), html=html)
 
 
