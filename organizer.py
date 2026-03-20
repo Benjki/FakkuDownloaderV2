@@ -22,7 +22,8 @@ _COVER_DELIMITER_KEYWORDS = frozenset({'vol', 'vol.', 'part', 'no', 'no.', 'numb
 _COVER_DATE_RE = re.compile(r'^\d{4}[-/]\d{2,}')  # YYYY-MM, YYYY-MMDD, YYYY-MM-DD …
 _COVER_YYYYMMDD_RE = re.compile(r'^\d{8}$')        # 20200607
 
-_TITLE_VOLUME_RE = re.compile(r'^(.+?)\s+(\d+)$')
+_TITLE_VOLUME_RE = re.compile(r'^(.+?)\s+(?:Part|Vol\.?|Ch\.?)\s*(\d+)$', re.IGNORECASE)
+_TITLE_VOLUME_BARE_RE = re.compile(r'^(.+?)\s+(\d+)$')
 
 TO_FIX_MANUALLY = 'TO FIX MANUALLY'
 
@@ -191,6 +192,7 @@ def detect_series(
     # Read the number directly from the <p> rather than inferring from list position.
     book_path = '/' + book_url.split('fakku.net/')[-1].rstrip('/')
     volume_number = None
+    max_listed_volume = 0
     for li in ul.find_all('li'):
         # Chapter link is wrapped in <b><a>, not <strong><a>
         b_tag = li.find('b')
@@ -199,22 +201,26 @@ def detect_series(
         a = b_tag.find('a', href=re.compile(r'/hentai/'))
         if not a:
             continue
-        if a['href'].rstrip('/') != book_path:
-            continue
-        # Found the matching chapter — read volume number from the first <div>
+        # Read volume number from the first <div>
         # Structure: <div class="flex-none text-right text-sm">N</div>
         first_div = li.find('div')
+        li_vol = None
         if first_div and first_div.get_text(strip=True).isdigit():
-            volume_number = int(first_div.get_text(strip=True))
-        else:
-            volume_number = 1
+            li_vol = int(first_div.get_text(strip=True))
+        if li_vol and li_vol > max_listed_volume:
+            max_listed_volume = li_vol
+        if a['href'].rstrip('/') != book_path:
+            continue
+        # Found the matching chapter
+        volume_number = li_vol if li_vol else 1
         break
 
     if volume_number is None:
+        volume_number = max_listed_volume + 1 if max_listed_volume else 1
         logger.warning(
-            'Book not found in series "%s" volume list — defaulting to vol 1.', series_name,
+            'Book not found in series "%s" volume list — assigning vol %d (last listed + 1).',
+            series_name, volume_number,
         )
-        volume_number = 1
 
     return series_name, volume_number, None
 
@@ -262,12 +268,21 @@ def compute_short_title(title: str, series_name: str) -> str:
 def infer_series_from_title(title: str) -> tuple[str, int] | None:
     """
     Heuristic fallback for when Fakku reports no series.
-    If title ends with a bare integer >= 2 (e.g. "Dark Pleasure 2"),
+    If title ends with a keyword + integer (e.g. "Mild Winter Part 2")
+    or a bare integer >= 2 (e.g. "Dark Pleasure 2"),
     infer series name and volume number from the title itself.
     Returns (series_name, volume_number) or None.
     False positives land in TO FIX MANUALLY via the missing-volumes check.
     """
+    # Try keyword pattern first: "Title Part 2", "Title Vol 3", "Title Ch 5"
     m = _TITLE_VOLUME_RE.match(title)
+    if m:
+        volume = int(m.group(2))
+        if volume >= 2:
+            return m.group(1).rstrip(' -'), volume
+
+    # Fall back to bare trailing number: "Dark Pleasure 2"
+    m = _TITLE_VOLUME_BARE_RE.match(title)
     if not m:
         return None
     volume = int(m.group(2))

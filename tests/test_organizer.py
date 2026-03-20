@@ -458,6 +458,16 @@ class TestDetectSeries:
         assert vol is None
         assert short is None
 
+    def test_book_not_in_list_gets_next_volume(self):
+        """Book in series but not in the volume list gets last listed + 1."""
+        _, vol, _ = detect_series(
+            _SERIES_HTML_TEMPLATE,
+            'https://www.fakku.net/hentai/my-test-series-chapter-3-unlisted',
+            None,
+        )
+        # List has vol 1 and 2, so unlisted book should get vol 3
+        assert vol == 3
+
     def test_short_title_is_none(self):
         """detect_series always returns None for short_title; caller computes it."""
         _, _, short = detect_series(

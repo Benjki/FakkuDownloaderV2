@@ -16,9 +16,9 @@ _ATTENTION_ROUTINGS = ('multi_collection', 'missing_volumes', 'file_conflict')
 
 def _badge(text: str, bg: str) -> str:
     style = (
-        f'display:inline-block;padding:3px 10px;border-radius:12px;'
+        f'display:inline-block;padding:4px 10px;border-radius:12px;'
         f'background:{bg};color:#fff;font-size:12px;font-weight:600;'
-        f'margin-right:6px;font-family:sans-serif;'
+        f'margin:2px 4px 2px 0;font-family:sans-serif;'
     )
     return f'<span style="{style}">{text}</span>'
 
@@ -29,8 +29,18 @@ def _sort_key(r: dict) -> str:
     return name.lower()
 
 
+def _group_header(label: str, count: int, border_color: str, bg_color: str, text_color: str) -> str:
+    return (
+        f'<div style="background:{bg_color};border-left:4px solid {border_color};'
+        f'padding:4px 12px;margin:16px 0 8px;border-radius:0 4px 4px 0;">'
+        f'<span style="font-size:12px;font-weight:700;color:{text_color};'
+        f'text-transform:uppercase;letter-spacing:0.5px;">{label} ({count})</span>'
+        f'</div>'
+    )
+
+
 # ---------------------------------------------------------------------------
-# Downloaded section helpers
+# Downloaded section helpers (mobile-friendly, div-based)
 # ---------------------------------------------------------------------------
 
 def _dl_attention_item(r: dict) -> str:
@@ -40,29 +50,31 @@ def _dl_attention_item(r: dict) -> str:
     pages = r.get('pages', '?')
 
     lines = [
-        f'<div style="font-size:13px;font-weight:700;color:#1f2937;">'
-        f'{r["display_name"]} '
-        f'<span style="font-weight:400;color:#6b7280;font-size:12px;">'
-        f'&middot; {author} &middot; {pages} pg</span></div>'
+        f'<div style="font-size:14px;font-weight:700;color:#1f2937;">{r["display_name"]}</div>',
+        f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">{author} &middot; {pages} pg</div>',
     ]
 
     if routing == 'missing_volumes':
         missing = r.get('missing_vol_nums', [])
         vols = ', '.join(f'vol.{k}' for k in missing)
         lines.append(
-            f'<div style="font-size:12px;color:#dc2626;margin-top:3px;">'
-            f'MISSING VOLUMES ({vols}) &mdash; {r["series_name"]} vol.{r["volume_number"]}</div>'
+            f'<div style="font-size:12px;color:#dc2626;font-weight:600;margin-top:4px;">'
+            f'MISSING VOLUMES ({vols})</div>'
+        )
+        lines.append(
+            f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">'
+            f'{r["series_name"]} vol.{r["volume_number"]}</div>'
         )
     elif routing == 'multi_collection':
         lines.append(
-            '<div style="font-size:12px;color:#dc2626;margin-top:3px;">'
-            'MULTIPLE COLLECTIONS &mdash; assign to correct series manually</div>'
+            '<div style="font-size:12px;color:#dc2626;font-weight:600;margin-top:4px;">'
+            'MULTIPLE COLLECTIONS &mdash; assign manually</div>'
         )
     elif routing == 'file_conflict':
         conflict = r.get('conflicting_path', 'unknown')
         lines.append(
-            '<div style="font-size:12px;color:#dc2626;margin-top:3px;">'
-            'FILE CONFLICT &mdash; CBZ already exists at destination</div>'
+            '<div style="font-size:12px;color:#dc2626;font-weight:600;margin-top:4px;">'
+            'FILE CONFLICT &mdash; CBZ already exists</div>'
         )
         lines.append(
             f'<div style="font-size:11px;color:#6b7280;margin-top:2px;">'
@@ -77,77 +89,68 @@ def _dl_attention_item(r: dict) -> str:
     return '\n'.join(lines)
 
 
-def _dl_table_row(r: dict, odd: bool) -> str:
-    """Render a single OK downloaded book as a table row."""
-    bg = 'background:#f9fafb;' if odd else ''
+def _dl_book_div(r: dict) -> str:
+    """Render a single OK downloaded book as a stacked div block."""
     routing = r.get('routing', 'oneshot')
 
-    # Title cell — may include warnings
-    title_parts = [r['display_name']]
+    # Title
+    lines = [f'<div style="font-size:14px;font-weight:700;color:#1f2937;">{r["display_name"]}</div>']
+
+    # Author + pages
+    if r.get('author'):
+        author_str = r['author']
+    else:
+        author_str = '<span style="color:#ef4444;font-style:italic;">Author NOT FOUND</span>'
+    lines.append(
+        f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">'
+        f'{author_str} &middot; {r.get("pages", "?")} pg</div>'
+    )
+
+    # Warnings
     if not r.get('author'):
-        title_parts.append(
-            '<span style="color:#ef4444;font-size:11px;margin-left:4px;">'
-            '&#9888; no author</span>'
+        lines.append(
+            '<div style="font-size:12px;color:#ef4444;margin-top:2px;">'
+            '&#9888; No author found</div>'
         )
     retries = r.get('page_retries', 0)
     if retries:
         label = 'retry' if retries == 1 else 'retries'
-        title_parts.append(
-            f'<span style="color:#f97316;font-size:11px;margin-left:4px;">'
-            f'&#9888; {retries} {label}</span>'
+        lines.append(
+            f'<div style="font-size:12px;color:#f97316;font-weight:600;margin-top:2px;">'
+            f'&#9888; {retries} page {label}</div>'
         )
-    title_html = ''.join(title_parts)
 
-    # Author cell
-    if r.get('author'):
-        author_html = f'<td style="padding:8px 12px;color:#6b7280;">{r["author"]}</td>'
-    else:
-        author_html = '<td style="padding:8px 12px;color:#ef4444;font-style:italic;">NOT FOUND</td>'
-
-    # Pages cell
-    pages_html = f'<td style="padding:8px 8px;text-align:center;color:#6b7280;">{r.get("pages", "?")}</td>'
-
-    # Destination cell
+    # Destination
     if routing == 'series':
-        new_tag = ' <span style="color:#22c55e;font-weight:600;font-size:10px;">(new)</span>' if r.get('series_dir_created') else ''
-        dest = f'{r["series_dir"]}/{new_tag} &middot; vol.{r["volume_number"]}'
+        new_tag = ' <span style="color:#22c55e;font-weight:600;">(new)</span>' if r.get('series_dir_created') else ''
+        lines.append(
+            f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">'
+            f'{r["series_dir"]}/{new_tag} &middot; vol.{r["volume_number"]}</div>'
+        )
     elif routing == 'cover':
-        dest = f'{r["series_dir"]}/'
+        lines.append(
+            f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">'
+            f'{r["series_dir"]}/</div>'
+        )
     else:  # oneshot
-        dest = f'{r["series_dir"]}/'
-    dest_html = f'<td style="padding:8px 12px;color:#6b7280;">{dest}</td>'
+        lines.append(
+            f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">'
+            f'{r["series_dir"]}/</div>'
+        )
 
-    row = (
-        f'<tr style="{bg}border-bottom:1px solid #e5e7eb;">'
-        f'<td style="padding:8px 12px;font-weight:600;">{title_html}</td>'
-        f'{author_html}{pages_html}{dest_html}'
-        f'</tr>'
-    )
-
-    # Oneshot move sub-row
+    # Oneshot move
     move = r.get('oneshot_move')
     if move:
-        row += (
-            f'<tr style="background:#f0fdf4;border-bottom:1px solid #e5e7eb;">'
-            f'<td colspan="4" style="padding:4px 12px 8px;font-size:11px;color:#6b7280;">'
-            f'<b style="color:#374151;">{r["display_name"]}:</b> '
-            f'&#8618; Moved vol.1 from OneShots:<br>'
-            f'&nbsp;&nbsp;From: {move["from"]}<br>'
-            f'&nbsp;&nbsp;To: {move["to"]}'
-            f'</td></tr>'
+        lines.append(
+            f'<div style="font-size:11px;color:#6b7280;margin-top:6px;padding-top:4px;'
+            f'border-top:1px dashed #d1d5db;">'
+            f'<b>{r["display_name"]}:</b> &#8618; Moved vol.1 from OneShots:<br>'
+            f'From: {move["from"]}<br>'
+            f'To: {move["to"]}'
+            f'</div>'
         )
 
-    return row
-
-
-def _group_header(label: str, count: int, border_color: str, bg_color: str, text_color: str) -> str:
-    return (
-        f'<div style="background:{bg_color};border-left:4px solid {border_color};'
-        f'padding:3px 12px;margin-bottom:8px;border-radius:0 4px 4px 0;">'
-        f'<span style="font-size:12px;font-weight:700;color:{text_color};'
-        f'text-transform:uppercase;letter-spacing:0.5px;">{label} ({count})</span>'
-        f'</div>'
-    )
+    return '\n'.join(lines)
 
 
 def _build_downloaded_html(downloaded: list[dict]) -> str:
@@ -160,7 +163,7 @@ def _build_downloaded_html(downloaded: list[dict]) -> str:
         key=_sort_key,
     )
     series = sorted(
-        [r for r in downloaded if r['routing'] == 'series' and r['routing'] not in _ATTENTION_ROUTINGS],
+        [r for r in downloaded if r['routing'] == 'series'],
         key=_sort_key,
     )
     oneshots = sorted(
@@ -173,8 +176,8 @@ def _build_downloaded_html(downloaded: list[dict]) -> str:
     )
 
     parts = [
-        '<div style="font-family:sans-serif;font-size:15px;font-weight:700;color:#374151;'
-        f'margin:0 0 16px;border-bottom:2px solid #1f2937;padding-bottom:6px;">'
+        '<div style="font-size:15px;font-weight:700;color:#374151;'
+        f'margin:0 0 12px;border-bottom:2px solid #1f2937;padding-bottom:6px;">'
         f'Downloaded ({len(downloaded)})</div>'
     ]
 
@@ -184,12 +187,12 @@ def _build_downloaded_html(downloaded: list[dict]) -> str:
         for i, r in enumerate(attention):
             border = 'border-bottom:1px solid #fecaca;' if i < len(attention) - 1 else ''
             items_html.append(
-                f'<div style="padding:8px 0;{border}">'
+                f'<div style="padding:10px 0;{border}">'
                 f'{_dl_attention_item(r)}</div>'
             )
         parts.append(
             '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;'
-            'padding:14px 16px;margin-bottom:20px;">'
+            'padding:12px;margin-bottom:16px;">'
             '<div style="font-size:13px;font-weight:700;color:#dc2626;margin-bottom:10px;'
             f'text-transform:uppercase;letter-spacing:0.5px;">&#9888; Needs Attention ({len(attention)})</div>'
             + '\n'.join(items_html)
@@ -199,46 +202,43 @@ def _build_downloaded_html(downloaded: list[dict]) -> str:
     # Series group
     if series:
         parts.append(_group_header('Series', len(series), '#22c55e', '#f0fdf4', '#16a34a'))
-        rows = ''.join(_dl_table_row(r, i % 2 == 1) for i, r in enumerate(series))
-        parts.append(
-            '<table width="100%" cellpadding="0" cellspacing="0" '
-            'style="font-size:12px;color:#1f2937;border-collapse:collapse;margin-bottom:20px;">'
-            f'{rows}</table>'
-        )
+        for r in series:
+            parts.append(
+                f'<div style="padding:10px 0;border-bottom:1px solid #e5e7eb;">'
+                f'{_dl_book_div(r)}</div>'
+            )
 
     # One-shots group
     if oneshots:
         parts.append(_group_header('One-shots', len(oneshots), '#3b82f6', '#eff6ff', '#2563eb'))
-        rows = ''.join(_dl_table_row(r, i % 2 == 1) for i, r in enumerate(oneshots))
-        parts.append(
-            '<table width="100%" cellpadding="0" cellspacing="0" '
-            'style="font-size:12px;color:#1f2937;border-collapse:collapse;margin-bottom:20px;">'
-            f'{rows}</table>'
-        )
+        for r in oneshots:
+            parts.append(
+                f'<div style="padding:10px 0;border-bottom:1px solid #e5e7eb;">'
+                f'{_dl_book_div(r)}</div>'
+            )
 
     # Covers group
     if covers:
         parts.append(_group_header('Covers', len(covers), '#9ca3af', '#f3f4f6', '#6b7280'))
-        rows = ''.join(_dl_table_row(r, i % 2 == 1) for i, r in enumerate(covers))
-        parts.append(
-            '<table width="100%" cellpadding="0" cellspacing="0" '
-            'style="font-size:12px;color:#1f2937;border-collapse:collapse;margin-bottom:20px;">'
-            f'{rows}</table>'
-        )
+        for r in covers:
+            parts.append(
+                f'<div style="padding:10px 0;border-bottom:1px solid #e5e7eb;">'
+                f'{_dl_book_div(r)}</div>'
+            )
 
     return '\n'.join(parts)
 
 
 # ---------------------------------------------------------------------------
-# ToPlace section helpers
+# ToPlace section helpers (mobile-friendly, div-based)
 # ---------------------------------------------------------------------------
 
 def _tp_attention_item(r: dict) -> str:
     """Render a single toplace item that needs attention (error or routing issue)."""
     if r.get('error'):
         lines = [
-            f'<div style="font-size:13px;font-weight:700;color:#1f2937;">{r["original_filename"]}</div>',
-            f'<div style="font-size:12px;color:#dc2626;margin-top:3px;">ERROR: {r["error"]}</div>',
+            f'<div style="font-size:14px;font-weight:700;color:#1f2937;">{r["original_filename"]}</div>',
+            f'<div style="font-size:12px;color:#dc2626;font-weight:600;margin-top:4px;">ERROR: {r["error"]}</div>',
             f'<div style="font-size:11px;color:#9ca3af;margin-top:2px;">Original: {r["original_filename"]}</div>',
         ]
         return '\n'.join(lines)
@@ -248,23 +248,25 @@ def _tp_attention_item(r: dict) -> str:
     pages = r.get('pages', '?')
 
     lines = [
-        f'<div style="font-size:13px;font-weight:700;color:#1f2937;">'
-        f'{r["display_name"]} '
-        f'<span style="font-weight:400;color:#6b7280;font-size:12px;">'
-        f'&middot; {author} &middot; {pages} pg</span></div>'
+        f'<div style="font-size:14px;font-weight:700;color:#1f2937;">{r["display_name"]}</div>',
+        f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">{author} &middot; {pages} pg</div>',
     ]
 
     if routing == 'missing_volumes':
         missing = r.get('missing_vol_nums', [])
         vols = ', '.join(f'vol.{k}' for k in missing)
         lines.append(
-            f'<div style="font-size:12px;color:#dc2626;margin-top:3px;">'
-            f'MISSING VOLUMES ({vols}) &mdash; {r["series_name"]} vol.{r["volume_number"]}</div>'
+            f'<div style="font-size:12px;color:#dc2626;font-weight:600;margin-top:4px;">'
+            f'MISSING VOLUMES ({vols})</div>'
+        )
+        lines.append(
+            f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">'
+            f'{r["series_name"]} vol.{r["volume_number"]}</div>'
         )
     elif routing == 'file_conflict':
         lines.append(
-            '<div style="font-size:12px;color:#dc2626;margin-top:3px;">'
-            'FILE CONFLICT &mdash; CBZ already exists at destination</div>'
+            '<div style="font-size:12px;color:#dc2626;font-weight:600;margin-top:4px;">'
+            'FILE CONFLICT &mdash; CBZ already exists</div>'
         )
 
     lines.append(
@@ -279,65 +281,54 @@ def _tp_attention_item(r: dict) -> str:
     return '\n'.join(lines)
 
 
-def _tp_table_row(r: dict, odd: bool) -> str:
-    """Render a single OK toplace book as a table row + original filename sub-row."""
-    bg = 'background:#f9fafb;' if odd else ''
+def _tp_book_div(r: dict) -> str:
+    """Render a single OK toplace book as a stacked div block."""
     routing = r.get('routing', 'oneshot')
 
-    # Title cell
-    title_parts = [r['display_name']]
-    if not r.get('author'):
-        title_parts.append(
-            '<span style="color:#ef4444;font-size:11px;margin-left:4px;">'
-            '&#9888; no author</span>'
-        )
-    title_html = ''.join(title_parts)
+    # Title
+    lines = [f'<div style="font-size:14px;font-weight:700;color:#1f2937;">{r["display_name"]}</div>']
 
-    # Author cell
+    # Author + pages
     if r.get('author'):
-        author_html = f'<td style="padding:8px 12px;color:#6b7280;">{r["author"]}</td>'
+        author_str = r['author']
     else:
-        author_html = '<td style="padding:8px 12px;color:#ef4444;font-style:italic;">NOT FOUND</td>'
+        author_str = '<span style="color:#ef4444;font-style:italic;">Author NOT FOUND</span>'
+    lines.append(
+        f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">'
+        f'{author_str} &middot; {r.get("pages", "?")} pg</div>'
+    )
 
-    # Pages cell
-    pages_html = f'<td style="padding:8px 8px;text-align:center;color:#6b7280;">{r.get("pages", "?")}</td>'
-
-    # Destination cell
+    # Destination
     if routing == 'series':
-        dest = f'{r["series_dir"]}/ &middot; vol.{r["volume_number"]}'
+        lines.append(
+            f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">'
+            f'{r["series_dir"]}/ &middot; vol.{r["volume_number"]}</div>'
+        )
     else:  # oneshot
-        dest = f'{r["series_dir"]}/'
-    dest_html = f'<td style="padding:8px 12px;color:#6b7280;">{dest}</td>'
+        lines.append(
+            f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">'
+            f'{r["series_dir"]}/</div>'
+        )
 
-    row = (
-        f'<tr style="{bg}border-bottom:1px solid #e5e7eb;">'
-        f'<td style="padding:8px 12px;font-weight:600;">{title_html}</td>'
-        f'{author_html}{pages_html}{dest_html}'
-        f'</tr>'
+    # Original filename
+    lines.append(
+        f'<div style="font-size:11px;color:#9ca3af;margin-top:2px;">'
+        f'Original: {r["original_filename"]}</div>'
     )
 
-    # Original filename sub-row
-    row += (
-        f'<tr>'
-        f'<td colspan="4" style="padding:2px 12px 8px;font-size:11px;color:#9ca3af;">'
-        f'Original: {r["original_filename"]} &rarr; {r["cbz_filename"]}</td>'
-        f'</tr>'
-    )
-
-    # Oneshot move sub-row
+    # Oneshot move
     move = r.get('oneshot_move')
     if move:
-        row += (
-            f'<tr style="background:#f0fdf4;border-bottom:1px solid #e5e7eb;">'
-            f'<td colspan="4" style="padding:4px 12px 8px;font-size:11px;color:#6b7280;">'
-            f'<b style="color:#374151;">{r["display_name"]}:</b> '
-            f'&#8618; Moved vol.1 from OneShots:<br>'
-            f'&nbsp;&nbsp;From: {move["from"]}<br>'
-            f'&nbsp;&nbsp;To: {move["to"]}'
-            f'</td></tr>'
+        lines.append(
+            f'<div style="font-size:11px;color:#6b7280;margin-top:6px;padding-top:4px;'
+            f'border-top:1px dashed #d1d5db;">'
+            f'<b>{r["display_name"]}:</b> &#8618; Moved vol.1 from OneShots:<br>'
+            f'From: {move["from"]}<br>'
+            f'To: {move["to"]}'
+            f'</div>'
         )
 
-    return row
+    return '\n'.join(lines)
 
 
 def _build_toplace_html(toplace_reports: list[dict]) -> str:
@@ -368,9 +359,9 @@ def _build_toplace_html(toplace_reports: list[dict]) -> str:
     ok_count = len(ok_placed)
 
     parts = [
-        '<div style="margin-top:28px;padding-top:20px;border-top:2px solid #e5e7eb;">',
-        '<div style="font-family:sans-serif;font-size:15px;font-weight:700;color:#374151;'
-        f'margin:0 0 16px;border-bottom:2px solid #1f2937;padding-bottom:6px;">'
+        '<div style="margin-top:20px;padding-top:16px;border-top:2px solid #e5e7eb;">',
+        '<div style="font-size:15px;font-weight:700;color:#374151;'
+        f'margin:0 0 8px;border-bottom:2px solid #1f2937;padding-bottom:6px;">'
         f'ToPlace Processing ({len(toplace_reports)})</div>',
     ]
 
@@ -389,12 +380,12 @@ def _build_toplace_html(toplace_reports: list[dict]) -> str:
         for i, r in enumerate(all_attention):
             border = 'border-bottom:1px solid #fecaca;' if i < len(all_attention) - 1 else ''
             items_html.append(
-                f'<div style="padding:8px 0;{border}">'
+                f'<div style="padding:10px 0;{border}">'
                 f'{_tp_attention_item(r)}</div>'
             )
         parts.append(
             '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;'
-            'padding:14px 16px;margin-bottom:20px;">'
+            'padding:12px;margin-bottom:16px;">'
             '<div style="font-size:13px;font-weight:700;color:#dc2626;margin-bottom:10px;'
             f'text-transform:uppercase;letter-spacing:0.5px;">&#9888; Needs Attention ({len(all_attention)})</div>'
             + '\n'.join(items_html)
@@ -404,22 +395,20 @@ def _build_toplace_html(toplace_reports: list[dict]) -> str:
     # Series group
     if series:
         parts.append(_group_header('Series', len(series), '#22c55e', '#f0fdf4', '#16a34a'))
-        rows = ''.join(_tp_table_row(r, i % 2 == 1) for i, r in enumerate(series))
-        parts.append(
-            '<table width="100%" cellpadding="0" cellspacing="0" '
-            'style="font-size:12px;color:#1f2937;border-collapse:collapse;margin-bottom:16px;">'
-            f'{rows}</table>'
-        )
+        for r in series:
+            parts.append(
+                f'<div style="padding:10px 0;border-bottom:1px solid #e5e7eb;">'
+                f'{_tp_book_div(r)}</div>'
+            )
 
     # One-shots group
     if oneshots:
         parts.append(_group_header('One-shots', len(oneshots), '#3b82f6', '#eff6ff', '#2563eb'))
-        rows = ''.join(_tp_table_row(r, i % 2 == 1) for i, r in enumerate(oneshots))
-        parts.append(
-            '<table width="100%" cellpadding="0" cellspacing="0" '
-            'style="font-size:12px;color:#1f2937;border-collapse:collapse;">'
-            f'{rows}</table>'
-        )
+        for r in oneshots:
+            parts.append(
+                f'<div style="padding:10px 0;border-bottom:1px solid #e5e7eb;">'
+                f'{_tp_book_div(r)}</div>'
+            )
 
     parts.append('</div>')
     return '\n'.join(parts)
@@ -461,12 +450,12 @@ def _build_success_html(
     not_owned_html = ''
     if not_owned:
         items = ''.join(
-            f'<div style="font-size:12px;color:#92400e;padding-left:8px;margin-bottom:4px;">'
-            f'&#9888; {r["url"]} &mdash; not owned at download time, check your subscription.</div>'
+            f'<div style="font-size:12px;color:#92400e;padding:4px 0;">'
+            f'&#9888; {r["url"]} &mdash; not owned, check subscription.</div>'
             for r in not_owned
         )
         not_owned_html = (
-            '<div style="font-family:sans-serif;font-size:12px;font-weight:700;color:#92400e;'
+            '<div style="font-size:13px;font-weight:700;color:#92400e;'
             'margin:16px 0 6px;padding-bottom:4px;border-bottom:1px solid #e5e7eb;">'
             'Not Owned (will retry next run)</div>'
             f'{items}'
@@ -476,12 +465,12 @@ def _build_success_html(
     skipped_html = ''
     if other_skipped:
         items = ''.join(
-            f'<div style="font-size:12px;color:#6b7280;padding-left:8px;">'
-            f'{r["url"]} &nbsp;[{r.get("skip_reason", "unknown")}]</div>'
+            f'<div style="font-size:12px;color:#6b7280;padding:4px 0;">'
+            f'{r["url"]} [{r.get("skip_reason", "unknown")}]</div>'
             for r in other_skipped
         )
         skipped_html = (
-            '<div style="font-family:sans-serif;font-size:12px;font-weight:700;color:#6b7280;'
+            '<div style="font-size:13px;font-weight:700;color:#6b7280;'
             'margin:16px 0 6px;padding-bottom:4px;border-bottom:1px solid #e5e7eb;">'
             'Skipped</div>'
             f'{items}'
@@ -492,33 +481,33 @@ def _build_success_html(
 
     return f"""<!DOCTYPE html>
 <html>
+<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
 <body style="margin:0;padding:0;background:#f3f4f6;">
-<table width="100%" cellpadding="0" cellspacing="0"
-       style="background:#f3f4f6;padding:24px 0;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:12px;">
   <tr><td>
-    <table width="700" align="center" cellpadding="0" cellspacing="0"
+    <table width="100%" cellpadding="0" cellspacing="0"
            style="background:#ffffff;border-radius:8px;
                   box-shadow:0 1px 3px rgba(0,0,0,.1);
-                  max-width:700px;width:100%;">
+                  max-width:600px;margin:0 auto;">
       <!-- header bar -->
       <tr>
-        <td style="background:#1f2937;padding:16px 20px;border-radius:8px 8px 0 0;">
-          <span style="font-family:sans-serif;font-size:18px;font-weight:700;
-                       color:#ffffff;">FakkuDownloader</span>
-          <span style="font-family:sans-serif;font-size:13px;color:#9ca3af;
-                       margin-left:10px;">run complete &middot; {elapsed}</span>
+        <td style="background:#1f2937;padding:14px 16px;border-radius:8px 8px 0 0;">
+          <div style="font-family:sans-serif;font-size:17px;font-weight:700;
+                       color:#ffffff;">FakkuDownloader</div>
+          <div style="font-family:sans-serif;font-size:12px;color:#9ca3af;
+                       margin-top:2px;">run complete &middot; {elapsed}</div>
         </td>
       </tr>
       <!-- summary banner -->
       <tr>
-        <td style="padding:14px 20px;background:#f9fafb;
+        <td style="padding:12px 16px;background:#f9fafb;
                    border-bottom:1px solid #e5e7eb;">
           {banner_html}
         </td>
       </tr>
       <!-- body -->
       <tr>
-        <td style="padding:20px 24px;font-family:sans-serif;">
+        <td style="padding:16px;font-family:sans-serif;">
           {downloaded_html}
           {not_owned_html}
           {skipped_html}
@@ -527,16 +516,16 @@ def _build_success_html(
       </tr>
       <!-- footer -->
       <tr>
-        <td style="padding:12px 20px;background:#f9fafb;border-radius:0 0 8px 8px;
+        <td style="padding:10px 16px;background:#f9fafb;border-radius:0 0 8px 8px;
                    border-top:1px solid #e5e7eb;">
           <span style="font-family:sans-serif;font-size:11px;color:#9ca3af;">
-            Generated by FakkuDownloaderV2
+            FakkuDownloaderV2
           </span>
           <span style="float:right;font-family:sans-serif;font-size:11px;color:#9ca3af;">
-            <span style="display:inline-block;width:8px;height:8px;background:#22c55e;border-radius:2px;margin-right:2px;vertical-align:middle;"></span>Series &nbsp;
-            <span style="display:inline-block;width:8px;height:8px;background:#3b82f6;border-radius:2px;margin-right:2px;vertical-align:middle;"></span>One-shot &nbsp;
-            <span style="display:inline-block;width:8px;height:8px;background:#9ca3af;border-radius:2px;margin-right:2px;vertical-align:middle;"></span>Cover &nbsp;
-            <span style="display:inline-block;width:8px;height:8px;background:#ef4444;border-radius:2px;margin-right:2px;vertical-align:middle;"></span>Attention
+            <span style="color:#22c55e;">&#9632;</span> Series
+            <span style="color:#3b82f6;">&#9632;</span> One-shot
+            <span style="color:#9ca3af;">&#9632;</span> Cover
+            <span style="color:#ef4444;">&#9632;</span> Attention
           </span>
         </td>
       </tr>
@@ -564,20 +553,21 @@ def _build_error_html(
 
     return f"""<!DOCTYPE html>
 <html>
+<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
 <body style="margin:0;padding:0;background:#f3f4f6;">
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:24px 0;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:12px;">
   <tr><td>
-    <table width="700" align="center" cellpadding="0" cellspacing="0"
+    <table width="100%" cellpadding="0" cellspacing="0"
            style="background:#ffffff;border-radius:8px;
-                  box-shadow:0 1px 3px rgba(0,0,0,.1);max-width:700px;width:100%;">
+                  box-shadow:0 1px 3px rgba(0,0,0,.1);max-width:600px;margin:0 auto;">
       <tr>
-        <td style="background:#991b1b;padding:16px 20px;border-radius:8px 8px 0 0;">
-          <span style="font-family:sans-serif;font-size:18px;font-weight:700;
-                       color:#ffffff;">FakkuDownloader &mdash; ERROR</span>
+        <td style="background:#991b1b;padding:14px 16px;border-radius:8px 8px 0 0;">
+          <div style="font-family:sans-serif;font-size:17px;font-weight:700;
+                       color:#ffffff;">FakkuDownloader &mdash; ERROR</div>
         </td>
       </tr>
       <tr>
-        <td style="padding:20px 24px;font-family:sans-serif;font-size:13px;color:#1f2937;">
+        <td style="padding:16px;font-family:sans-serif;font-size:13px;color:#1f2937;">
           <p style="margin:0 0 8px;"><b>URL:</b> {url}</p>
           <p style="margin:0 0 8px;"><b>Location:</b> {location}</p>
           <p style="margin:0 0 16px;color:#ef4444;font-weight:600;">
@@ -585,17 +575,16 @@ def _build_error_html(
           </p>
           <p style="margin:0 0 4px;font-weight:600;">Traceback:</p>
           <pre style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px;
-                      padding:12px;font-size:12px;overflow-x:auto;
+                      padding:12px;font-size:11px;overflow-x:auto;
                       white-space:pre-wrap;word-break:break-all;">{trace}</pre>
           {completed_html}
         </td>
       </tr>
-      <!-- footer -->
       <tr>
-        <td style="padding:12px 20px;background:#f9fafb;border-radius:0 0 8px 8px;
+        <td style="padding:10px 16px;background:#f9fafb;border-radius:0 0 8px 8px;
                    border-top:1px solid #e5e7eb;">
           <span style="font-family:sans-serif;font-size:11px;color:#9ca3af;">
-            Generated by FakkuDownloaderV2
+            FakkuDownloaderV2
           </span>
         </td>
       </tr>
