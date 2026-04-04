@@ -23,6 +23,7 @@ _COVER_DATE_RE = re.compile(r'^\d{4}[-/]\d{2,}')  # YYYY-MM, YYYY-MMDD, YYYY-MM-
 _COVER_YYYYMMDD_RE = re.compile(r'^\d{8}$')        # 20200607
 
 _TITLE_VOLUME_RE = re.compile(r'^(.+?)\s+(?:Part|Vol\.?|Ch\.?)\s*(\d+)$', re.IGNORECASE)
+_TITLE_VOLUME_HASH_RE = re.compile(r'^(.+?)\s*[#\uff03](\d+)$')
 _TITLE_VOLUME_BARE_RE = re.compile(r'^(.+?)\s+(\d+)$')
 
 TO_FIX_MANUALLY = 'TO FIX MANUALLY'
@@ -281,6 +282,13 @@ def infer_series_from_title(title: str) -> tuple[str, int] | None:
         if volume >= 2:
             return m.group(1).rstrip(' -'), volume
 
+    # Try hash pattern: "Title #2", "Title ＃2" (fullwidth number sign)
+    m = _TITLE_VOLUME_HASH_RE.match(title)
+    if m:
+        volume = int(m.group(2))
+        if volume >= 2:
+            return m.group(1).rstrip(' -'), volume
+
     # Fall back to bare trailing number: "Dark Pleasure 2"
     m = _TITLE_VOLUME_BARE_RE.match(title)
     if not m:
@@ -397,7 +405,10 @@ def build_filename(book: Book) -> str:
     author_tag = f' [{book.author}]' if book.author else ''
     if book.is_series():
         short = book.short_title or ''
-        if short and not short.isdigit() and short != book.series_name:
+        # Omit subtitle if it's just a volume marker (bare number, "#N", "＃N", "Part N", etc.)
+        _short_is_vol_marker = bool(re.match(r'^[#\uff03]?\d+$', short)) or bool(
+            re.match(r'^(?:Part|Vol\.?|Ch\.?)\s*\d+$', short, re.IGNORECASE))
+        if short and not _short_is_vol_marker and short != book.series_name:
             stem = f'{book.series_name} vol.{book.volume_number} - {short}{author_tag}'
         else:
             stem = f'{book.series_name} vol.{book.volume_number}{author_tag}'

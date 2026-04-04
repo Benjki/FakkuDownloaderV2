@@ -129,8 +129,14 @@ class TestBuildFilename:
         assert build_filename(b) == 'My Book [Author].cbz'
 
     def test_series_filename_with_subtitle(self):
-        b = make_series(series_name='MySeries', volume_number=3, short_title='Part 3', author='Auth')
-        assert build_filename(b) == 'MySeries vol.3 - Part 3 [Auth].cbz'
+        b = make_series(series_name='MySeries', volume_number=3, short_title='After Story', author='Auth')
+        assert build_filename(b) == 'MySeries vol.3 - After Story [Auth].cbz'
+
+    def test_series_filename_vol_marker_subtitle_omitted(self):
+        """Subtitles that are just volume markers (Part N, #N, ＃N) are omitted."""
+        for short in ['Part 3', '#3', '\uff033', '3']:
+            b = make_series(series_name='MySeries', volume_number=3, short_title=short, author='Auth')
+            assert build_filename(b) == 'MySeries vol.3 [Auth].cbz', f'short_title={short!r}'
 
     def test_series_filename_empty_short_title(self):
         # short_title equals series_name (compute_short_title fallback) — omit subtitle
@@ -508,6 +514,18 @@ class TestInferSeriesFromTitle:
 
     def test_single_word_with_number(self):
         assert infer_series_from_title('Series 2') == ('Series', 2)
+
+    def test_hash_volume(self):
+        assert infer_series_from_title('My Tall, Stacked, Virgin Boss #2') == ('My Tall, Stacked, Virgin Boss', 2)
+
+    def test_fullwidth_hash_volume(self):
+        assert infer_series_from_title('My Tall, Stacked, Virgin Boss \uff032') == ('My Tall, Stacked, Virgin Boss', 2)
+
+    def test_hash_vol1_returns_none(self):
+        assert infer_series_from_title('Some Series #1') is None
+
+    def test_part_keyword(self):
+        assert infer_series_from_title('Mild Winter Part 2') == ('Mild Winter', 2)
 
 
 # ---------------------------------------------------------------------------

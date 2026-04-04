@@ -230,13 +230,31 @@ class Placer:
                         continue
                     name_lower = f.stem.lower()
                     series_lower = book.series_name.lower()
-                    # Match "Series vol.N" or "Series" (for vol.1 as oneshot)
+
+                    # Check for volume markers: "vol.N", "Part N", "#N", "＃N", or bare "N"
+                    def _has_volume(n_lower: str, s_lower: str, v: int) -> bool:
+                        if s_lower not in n_lower:
+                            return False
+                        vol_patterns = [
+                            f'vol.{v}', f'vol {v}', f'part {v}', f'ch.{v}', f'ch {v}',
+                            f'#{v}', f'\uff03{v}',
+                        ]
+                        for pat in vol_patterns:
+                            if pat in n_lower:
+                                return True
+                        # Bare number: "Series N [Author]" — extract title part and check
+                        tm = re.match(r'^(.+?)\s*\[', f.stem)
+                        raw_title = (tm.group(1).strip() if tm else f.stem.strip()).lower()
+                        if raw_title.endswith(f' {v}') and raw_title[:-len(f' {v}')] == s_lower:
+                            return True
+                        return False
+
                     if vol == 1:
-                        # Vol.1 might be stored as oneshot (just title) or as "Series vol.1"
-                        if f'vol.{vol}' in name_lower and series_lower in name_lower:
+                        # Vol.1 might be stored with a volume marker
+                        if _has_volume(name_lower, series_lower, vol):
                             found = True
                             break
-                        # Check if it's the oneshot form: "Series [Author]"
+                        # Or as oneshot (just title): "Series [Author]"
                         m = re.match(r'^(.+?)\s*\[([^\]]+)\]\s*$', f.stem)
                         if m:
                             file_title = m.group(1).strip().lower()
@@ -248,7 +266,7 @@ class Placer:
                             found = True
                             break
                     else:
-                        if f'vol.{vol}' in name_lower and series_lower in name_lower:
+                        if _has_volume(name_lower, series_lower, vol):
                             found = True
                             break
                 if found:
