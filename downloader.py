@@ -234,7 +234,7 @@ class Downloader:
             # Try to rescue vol.1 from %%%OneShots%%% if it's not yet in the series dir.
             vol1_present = series_dir_abs.exists() and any(
                 f.name.lower().startswith(series_safe + ' vol.1')
-                for f in series_dir_abs.glob('*.cbz')
+                for f in list(series_dir_abs.glob('*.cbz')) + list(series_dir_abs.glob('*.zip'))
             )
             if not vol1_present:
                 oneshot_move = check_and_move_oneshot(
@@ -246,7 +246,7 @@ class Downloader:
             for k in range(1, book.volume_number):
                 k_present = series_dir_abs.exists() and any(
                     f.name.lower().startswith(f'{series_safe} vol.{k}')
-                    for f in series_dir_abs.glob('*.cbz')
+                    for f in list(series_dir_abs.glob('*.cbz')) + list(series_dir_abs.glob('*.zip'))
                 )
                 if not k_present:
                     missing_vol_nums.append(k)
@@ -578,7 +578,7 @@ class Downloader:
 
             vol1_present = series_dir_abs.exists() and any(
                 f.name.lower().startswith(series_safe + ' vol.1')
-                for f in series_dir_abs.glob('*.cbz')
+                for f in list(series_dir_abs.glob('*.cbz')) + list(series_dir_abs.glob('*.zip'))
             )
             if not vol1_present:
                 oneshot_move = check_and_move_oneshot(
@@ -589,7 +589,7 @@ class Downloader:
             for k in range(1, book.volume_number):
                 k_present = series_dir_abs.exists() and any(
                     f.name.lower().startswith(f'{series_safe} vol.{k}')
-                    for f in series_dir_abs.glob('*.cbz')
+                    for f in list(series_dir_abs.glob('*.cbz')) + list(series_dir_abs.glob('*.zip'))
                 )
                 if not k_present:
                     missing_vol_nums.append(k)
