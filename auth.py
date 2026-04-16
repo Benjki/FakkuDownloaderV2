@@ -56,7 +56,15 @@ def _session_is_valid(browser: Browser) -> bool:
             wait_until='domcontentloaded',
             timeout=15000,
         )
-        return '/login' not in browser.page.url
+        if '/login' in browser.page.url:
+            return False
+        content = browser.page.content()
+        # Unauthenticated responses are small and may contain a login form
+        if len(content) < 15000:
+            return False
+        if 'name="email"' in content:
+            return False
+        return True
     except Exception:
         return False
 

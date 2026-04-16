@@ -40,6 +40,10 @@ class PaginationError(Exception):
     pass
 
 
+class SessionError(Exception):
+    pass
+
+
 class Downloader:
     def __init__(self, browser: Browser, config: Config):
         self._browser = browser
@@ -73,6 +77,11 @@ class Downloader:
         if actual_url.rstrip('/') != config.fakku_collection_url.rstrip('/'):
             logger.warning('Collection page redirected: %s -> %s', config.fakku_collection_url, actual_url)
         logger.info('Collection page loaded (url=%s html_len=%d)', actual_url, len(html))
+        if len(html) < 35000:
+            raise SessionError(
+                f'Collection page too small ({len(html)} bytes, expected ~47000) — '
+                'session is likely invalid. Delete cookies.pickle and re-run.'
+            )
         soup = BeautifulSoup(html, 'lxml')
 
         # Determine total page count
@@ -747,8 +756,8 @@ class Downloader:
 
         try:
             queue = self.fetch_queue()
-        except PaginationError as e:
-            logger.error('[DRY RUN] Pagination error: %s', e)
+        except (PaginationError, SessionError) as e:
+            logger.error('[DRY RUN] %s: %s', type(e).__name__, e)
             return
 
         if not queue:
@@ -798,8 +807,8 @@ class Downloader:
 
         try:
             queue = self.fetch_queue()
-        except PaginationError as e:
-            logger.error('Pagination error: %s', e)
+        except (PaginationError, SessionError) as e:
+            logger.error('%s: %s', type(e).__name__, e)
             notifier_module.send_error(
                 self._config, self._config.fakku_collection_url, None, str(e), ''
             )
