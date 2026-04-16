@@ -77,11 +77,6 @@ class Downloader:
         if actual_url.rstrip('/') != config.fakku_collection_url.rstrip('/'):
             logger.warning('Collection page redirected: %s -> %s', config.fakku_collection_url, actual_url)
         logger.info('Collection page loaded (url=%s html_len=%d)', actual_url, len(html))
-        if len(html) < 35000:
-            raise SessionError(
-                f'Collection page too small ({len(html)} bytes, expected ~47000) — '
-                'session is likely invalid. Delete cookies.pickle and re-run.'
-            )
         soup = BeautifulSoup(html, 'lxml')
 
         # Determine total page count
@@ -125,6 +120,14 @@ class Downloader:
                 'div', class_=lambda c: c and 'flex' in c and 'mt-3' in c
             )
             logger.info('Page %d: found %d book divs.', pg, len(divs))
+            if pg == 1 and len(divs) == 0:
+                # id="collection-slug" is injected by the server only for authenticated
+                # collection owners. Its absence means the page is a stripped/guest render.
+                if 'id="collection-slug"' not in html:
+                    raise SessionError(
+                        'Collection page loaded but missing ownership marker — '
+                        'session is likely invalid.'
+                    )
             for div in divs:
                 a = div.find('a', href=True)
                 if a:

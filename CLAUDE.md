@@ -49,7 +49,7 @@ pytest tests/test_organizer.py::TestRouteBook::test_series_routing
 
 ### Queue & download orchestration
 - **`downloader.py`** — `Downloader` class.
-  - `fetch_queue()` paginates the collection page and returns URLs not already in `done.txt`. Uses `page.wait_for_selector('div.flex.mt-3')` to wait for the JavaScript-injected book list before reading `page.content()`. Logs `html_len` and div count — expected ~47KB for a valid session.
+  - `fetch_queue()` paginates the collection page and returns URLs not already in `done.txt`. Uses `page.wait_for_selector('div.flex.mt-3')` to wait for the JavaScript-injected book list before reading `page.content()`. Logs `html_len` and div count — expected ~30KB for a valid session (verified Apr 2026; was ~47KB historically).
   - `download_book()` is the 13-step per-book flow: fetch info page → ownership check → extract metadata → detect series → route → screenshot every page → validate → pack CBZ → mark done.
   - `dry_run_book()` mirrors steps 1–7 (no screenshots/CBZ/done.txt write).
   - `download_page()` resizes the viewport to the canvas dimensions on each page (mirrors human behaviour, avoids static-viewport fingerprinting).
