@@ -121,23 +121,24 @@ def login(browser: Browser, config: Config) -> list[dict]:
     return browser.get_cookies()
 
 
-def ensure_authenticated(browser: Browser, config: Config, notifier) -> None:
+def ensure_authenticated(browser: Browser, config: Config, notifier, force: bool = False) -> None:
     """
     Called at the start of every run.
     1. If cookies file has cookies AND they haven't passed their expiry: inject and
        verify the session against /account.  If the live check passes, proceed.
-    2. Any other case (no file, empty, past expiry, or live check fails): run full
-       TOTP login and save fresh cookies.
-    3. If cookies are expiring within 14 days, send a warning email after logging in.
+    2. Any other case (no file, empty, past expiry, live check fails, or force=True):
+       run full TOTP login and save fresh cookies.
     """
-    cookies = load_cookies(config.cookies_file)
-
-    if cookies and not _cookies_past_expiry(cookies):
-        browser.load_cookies(cookies)
-        if _session_is_valid(browser):
-            logger.info('Cookies loaded from file — login skipped.')
-            return
-        logger.info('Session check failed — cookies may have been invalidated remotely.')
+    if not force:
+        cookies = load_cookies(config.cookies_file)
+        if cookies and not _cookies_past_expiry(cookies):
+            browser.load_cookies(cookies)
+            if _session_is_valid(browser):
+                logger.info('Cookies loaded from file — login skipped.')
+                return
+            logger.info('Session check failed — cookies may have been invalidated remotely.')
+    else:
+        logger.info('Forced re-login requested.')
 
     logger.info('Running TOTP login...')
     new_cookies = login(browser, config)

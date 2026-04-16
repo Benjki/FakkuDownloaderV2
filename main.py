@@ -8,7 +8,7 @@ import notifier as notifier_module
 from auth import ensure_authenticated
 from browser import Browser
 from config import load_config
-from downloader import Downloader
+from downloader import Downloader, SessionError
 from placer import Placer
 
 
@@ -46,10 +46,20 @@ def main():
         try:
             ensure_authenticated(browser, config, notifier_module)
             downloader = Downloader(browser, config)
-            if args.dry_run:
-                dl_result = downloader.run_dry_run()
-            else:
-                dl_result = downloader.run()
+            try:
+                if args.dry_run:
+                    dl_result = downloader.run_dry_run()
+                else:
+                    dl_result = downloader.run()
+            except SessionError as e:
+                logging.getLogger('main').warning(
+                    'Session invalid after initial auth check — forcing re-login: %s', e
+                )
+                ensure_authenticated(browser, config, notifier_module, force=True)
+                if args.dry_run:
+                    dl_result = downloader.run_dry_run()
+                else:
+                    dl_result = downloader.run()
         except KeyboardInterrupt:
             logging.getLogger('main').info('Interrupted by user.')
         except Exception as e:

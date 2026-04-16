@@ -756,8 +756,10 @@ class Downloader:
 
         try:
             queue = self.fetch_queue()
-        except (PaginationError, SessionError) as e:
-            logger.error('[DRY RUN] %s: %s', type(e).__name__, e)
+        except SessionError:
+            raise
+        except PaginationError as e:
+            logger.error('[DRY RUN] PaginationError: %s', e)
             return
 
         if not queue:
@@ -807,8 +809,10 @@ class Downloader:
 
         try:
             queue = self.fetch_queue()
-        except (PaginationError, SessionError) as e:
-            logger.error('%s: %s', type(e).__name__, e)
+        except SessionError:
+            raise
+        except PaginationError as e:
+            logger.error('PaginationError: %s', e)
             notifier_module.send_error(
                 self._config, self._config.fakku_collection_url, None, str(e), ''
             )
