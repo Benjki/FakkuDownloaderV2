@@ -44,6 +44,13 @@ class SessionError(Exception):
     pass
 
 
+class EndOfBook(Exception):
+    """Raised when the reader redirects to a page earlier than requested — book is shorter than metadata claims."""
+    def __init__(self, requested: int, actual: int):
+        super().__init__(f'Requested page {requested} but reader shows page {actual} — book ends at page {actual}')
+        self.actual_page = actual
+
+
 class Downloader:
     def __init__(self, browser: Browser, config: Config):
         self._browser = browser
@@ -286,7 +293,16 @@ class Downloader:
                 logger.info('Page %d/%d (cached)', page_num, pages)
                 continue
             logger.info('Page %d/%d', page_num, pages)
-            page_retries += self.download_page(url, dest, page_num)
+            try:
+                page_retries += self.download_page(url, dest, page_num)
+            except EndOfBook as e:
+                logger.warning(
+                    '"%s": metadata claimed %d pages but reader stopped at page %d — adjusting.',
+                    title, pages, e.actual_page,
+                )
+                pages = e.actual_page
+                book.pages = pages
+                break
 
         # 10. Page count validation (all pages must be present)
         actual = len(list(Path(temp_dir).glob('*.png')))
@@ -385,6 +401,10 @@ class Downloader:
                         f'Unexpected redirect to {page.url} — possible soft ban'
                     )
 
+                # End-of-book check — FAKKU redirects out-of-range pages to /read/page/end.
+                if page.url.rstrip('/').endswith('/read/page/end'):
+                    raise EndOfBook(page_num, page_num - 1)
+
                 # Wait for the reader iframe and page view element
                 frame_locator = page.frame_locator('iframe[title="FAKKU Reader"]')
                 frame_locator.locator('div[data-name="PageView"]').wait_for(
@@ -413,6 +433,18 @@ class Downloader:
                 # V1 did this on every page; the changing window size looks like
                 # real browser behaviour and avoids a static-viewport fingerprint.
                 canvas_idx = max(0, (layers or 1) - 2)
+
+                # End-of-book check — if the reader rendered no canvases after PageView
+                # appeared, the metadata page count is wrong and we've passed the real end.
+                canvas_count = page.evaluate(
+                    """() => {
+                        const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
+                        if (!iframe || !iframe.contentDocument) return -1;
+                        return iframe.contentDocument.getElementsByTagName('canvas').length;
+                    }"""
+                )
+                if canvas_count == 0:
+                    raise EndOfBook(page_num, page_num - 1)
                 canvas_dims = page.evaluate(
                     f"""() => {{
                         const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
@@ -456,6 +488,8 @@ class Downloader:
 
                 return failed
 
+            except EndOfBook:
+                raise
             except Exception as e:
                 failed += 1
                 logger.warning('Page %d attempt %d/%d failed: %s', page_num, attempt + 1, config.max_retry, e)
