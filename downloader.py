@@ -443,7 +443,7 @@ class Downloader:
                         return iframe.contentDocument.getElementsByTagName('canvas').length;
                     }"""
                 )
-                if canvas_count == 0:
+                if canvas_count != -1 and canvas_count <= canvas_idx:
                     raise EndOfBook(page_num, page_num - 1)
                 canvas_dims = page.evaluate(
                     f"""() => {{
