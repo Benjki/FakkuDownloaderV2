@@ -443,8 +443,10 @@ class Downloader:
                         return iframe.contentDocument.getElementsByTagName('canvas').length;
                     }"""
                 )
-                if canvas_count != -1 and canvas_count <= canvas_idx:
+                if canvas_count != -1 and canvas_count == 0:
                     raise EndOfBook(page_num, page_num - 1)
+                if canvas_count != -1 and canvas_idx >= canvas_count:
+                    canvas_idx = 0
                 canvas_dims = page.evaluate(
                     f"""() => {{
                         const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
