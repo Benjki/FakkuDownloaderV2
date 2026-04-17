@@ -446,7 +446,18 @@ class Downloader:
                 if canvas_count != -1 and canvas_count == 0:
                     raise EndOfBook(page_num, page_num - 1)
                 if canvas_count != -1 and canvas_idx >= canvas_count:
-                    canvas_idx = 0
+                    # Target canvas hasn't rendered yet — wait for it to appear.
+                    try:
+                        page.wait_for_function(
+                            f"""() => {{
+                                const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
+                                if (!iframe || !iframe.contentDocument) return false;
+                                return iframe.contentDocument.getElementsByTagName('canvas').length > {canvas_idx};
+                            }}""",
+                            timeout=int(config.page_timeout * 1000),
+                        )
+                    except Exception:
+                        raise EndOfBook(page_num, page_num - 1)
                 canvas_dims = page.evaluate(
                     f"""() => {{
                         const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
