@@ -403,6 +403,7 @@ class Downloader:
 
                 # End-of-book check — FAKKU redirects out-of-range pages to /read/page/end.
                 if page.url.rstrip('/').endswith('/read/page/end'):
+                    logger.debug('Page %d: server redirected to /read/page/end → EndOfBook', page_num)
                     raise EndOfBook(page_num, page_num - 1)
 
                 # Wait for the reader iframe and page view element
@@ -434,8 +435,10 @@ class Downloader:
                 # real browser behaviour and avoids a static-viewport fingerprint.
                 canvas_idx = max(0, (layers or 1) - 2)
 
-                # End-of-book check — if the reader rendered no canvases after PageView
-                # appeared, the metadata page count is wrong and we've passed the real end.
+                # Wait for the target canvas to appear. Raise a retryable ValueError
+                # (not EndOfBook) on timeout — a slow render is not a true end-of-book.
+                # EndOfBook is only raised by the URL redirect check above, which is
+                # the authoritative signal from FAKKU's server.
                 canvas_count = page.evaluate(
                     """() => {
                         const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
@@ -443,10 +446,7 @@ class Downloader:
                         return iframe.contentDocument.getElementsByTagName('canvas').length;
                     }"""
                 )
-                if canvas_count != -1 and canvas_count == 0:
-                    raise EndOfBook(page_num, page_num - 1)
-                if canvas_count != -1 and canvas_idx >= canvas_count:
-                    # Target canvas hasn't rendered yet — wait for it to appear.
+                if canvas_count != -1 and (canvas_count == 0 or canvas_idx >= canvas_count):
                     try:
                         page.wait_for_function(
                             f"""() => {{
@@ -457,7 +457,13 @@ class Downloader:
                             timeout=int(config.page_timeout * 1000),
                         )
                     except Exception:
-                        raise EndOfBook(page_num, page_num - 1)
+                        logger.debug(
+                            'Page %d: canvas %d not found (canvas_count=%s) within timeout — retrying as transient error',
+                            page_num, canvas_idx, canvas_count,
+                        )
+                        raise ValueError(
+                            f'Canvas {canvas_idx} did not appear for page {page_num} within timeout'
+                        )
                 canvas_dims = page.evaluate(
                     f"""() => {{
                         const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
