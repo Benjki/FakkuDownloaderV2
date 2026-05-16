@@ -166,8 +166,17 @@ class Downloader:
         config = self._config
         page = self._browser.page
 
-        # 1. Fetch book info page
-        page.goto(url, wait_until='domcontentloaded')
+        # 1. Fetch book info page (retry on timeout — Fakku occasionally hangs)
+        for _attempt in range(3):
+            try:
+                page.goto(url, wait_until='domcontentloaded', timeout=60000)
+                break
+            except Exception as _e:
+                if _attempt == 2:
+                    raise
+                _wait = 10 * (_attempt + 1)
+                logger.warning('Info page timed out (attempt %d/3) — waiting %ds and retrying', _attempt + 1, _wait)
+                time.sleep(_wait)
         time.sleep(5)
         html = page.content()
 
@@ -285,24 +294,43 @@ class Downloader:
         temp_dir = str(Path(config.temp_dir) / _safe_dirname(title))
         create_folder_if_missing(temp_dir)
 
-        # 9. Screenshot each page (skip pages already captured in a previous run)
+        # 9. Screenshot each page (skip pages already captured in a previous run).
+        # Navigate to the reader once and advance page-by-page via ArrowRight.
+        # FAKKU saves reading position server-side; the SPA fetches it from
+        # https://reader.fakku.net/progress/<slug> and resumes there.  We intercept
+        # that endpoint for the duration of this book and return {"page":1} so the
+        # SPA always starts from the beginning.
+        def _progress_handler(route, request):
+            route.fulfill(
+                status=200,
+                headers={'content-type': 'application/json'},
+                body='{"page":1,"readAt":0,"total":0}',
+            )
+
+        page.route('**/progress/**', _progress_handler)
         page_retries = 0
-        for page_num in range(1, pages + 1):
-            dest = str(Path(temp_dir) / f'{page_num}.png')
-            if self._page_already_done(dest):
-                logger.info('Page %d/%d (cached)', page_num, pages)
-                continue
-            logger.info('Page %d/%d', page_num, pages)
-            try:
-                page_retries += self.download_page(url, dest, page_num)
-            except EndOfBook as e:
-                logger.warning(
-                    '"%s": metadata claimed %d pages but reader stopped at page %d — adjusting.',
-                    title, pages, e.actual_page,
-                )
-                pages = e.actual_page
-                book.pages = pages
-                break
+        try:
+            self._navigate_reader(url)
+            for page_num in range(1, pages + 1):
+                dest = str(Path(temp_dir) / f'{page_num}.png')
+                if page_num > 1:
+                    self._advance_reader_page()
+                if self._page_already_done(dest):
+                    logger.info('Page %d/%d (cached)', page_num, pages)
+                    continue
+                logger.info('Page %d/%d', page_num, pages)
+                try:
+                    page_retries += self.download_page(url, dest, page_num)
+                except EndOfBook as e:
+                    logger.warning(
+                        '"%s": metadata claimed %d pages but reader stopped at page %d — adjusting.',
+                        title, pages, e.actual_page,
+                    )
+                    pages = e.actual_page
+                    book.pages = pages
+                    break
+        finally:
+            page.unroute('**/progress/**', _progress_handler)
 
         # 10. Page count validation (all pages must be present)
         actual = len(list(Path(temp_dir).glob('*.png')))
@@ -378,9 +406,11 @@ class Downloader:
 
     def download_page(self, book_url: str, dest: str, page_num: int) -> int:
         """
-        Screenshot a single reader page with retry logic.
-        Attempts up to config.max_retry times with exponential backoff.
-        Returns the number of failed attempts before success (0 = first try worked).
+        Screenshot the reader page that is currently displayed.
+        The caller (download_book) is responsible for navigating the reader to
+        the correct page via _navigate_reader / _advance_reader_page before
+        calling this method.  On retry this method re-navigates itself.
+        Returns the number of failed attempts before success (0 = first try).
         """
         config = self._config
         page = self._browser.page
@@ -389,104 +419,161 @@ class Downloader:
 
         for attempt in range(config.max_retry):
             try:
-                reader_url = f'{book_url}/read/page/{page_num}'
-                page.goto(reader_url, wait_until='domcontentloaded')
+                if attempt > 0:
+                    # Re-navigate to the reader start and advance back to page_num.
+                    self._navigate_reader(book_url)
+                    for _ in range(page_num - 1):
+                        self._advance_reader_page()
+                    time.sleep(1)
 
-                # Soft-ban check — detect redirect away from this book's reader entirely.
-                # The SPA may normalize /read/page/1 → /read, so allow both forms;
-                # only flag a redirect that leaves the book's URL namespace.
-                book_base = book_url.rstrip('/')
-                if f'{book_base}/read' not in page.url:
-                    raise RuntimeError(
-                        f'Unexpected redirect to {page.url} — possible soft ban'
-                    )
-
-                # End-of-book check — FAKKU redirects out-of-range pages to /read/page/end.
-                if page.url.rstrip('/').endswith('/read/page/end'):
-                    logger.debug('Page %d: server redirected to /read/page/end → EndOfBook', page_num)
-                    raise EndOfBook(page_num, page_num - 1)
-
-                # Wait for the reader iframe and page view element
+                # Sanity check: reader iframe and page view element are visible.
                 frame_locator = page.frame_locator('iframe[title="FAKKU Reader"]')
                 frame_locator.locator('div[data-name="PageView"]').wait_for(
                     timeout=int(config.page_timeout * 1000)
                 )
 
-                # Remove top overlay layer via JS on the iframe document
-                layers = page.evaluate(
-                    """() => {
+                # Re-detect the reader frame from page.frames on every attempt.
+                # The FAKKU reader navigates the iframe to a new URL on each
+                # ArrowRight, which detaches the previously cached Frame object.
+                # wait_for_function on a detached frame hangs indefinitely, so we
+                # must always get a fresh reference after wait_for(PageView) confirms
+                # the new frame is present.
+                reader_frame = next(
+                    (f for f in page.frames
+                     if f.query_selector('div[data-name="PageView"]') is not None),
+                    None,
+                )
+                if reader_frame is not None:
+                    self._reader_frame = reader_frame  # keep cache current for _advance_reader_page
+                else:
+                    logger.warning('Page %d: reader frame not detected — falling back to parent-page evaluation', page_num)
+
+                # Count .layer elements for spread detection.
+                # Do NOT remove the overlay layer — that corrupts React's virtual DOM
+                # and breaks all subsequent page navigation (renders only a 300x150
+                # placeholder canvas).  We hide it temporarily for the screenshot instead.
+                if reader_frame:
+                    layers = reader_frame.evaluate(
+                        "() => document.getElementsByClassName('layer').length"
+                    )
+                else:
+                    layers = page.evaluate("""() => {
                         const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
                         if (!iframe || !iframe.contentDocument) return 0;
                         return iframe.contentDocument.getElementsByClassName('layer').length;
-                    }"""
-                )
-                if layers and layers > 0:
-                    page.evaluate(
-                        f"""() => {{
-                            const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
-                            if (!iframe || !iframe.contentDocument) return;
-                            const layers = iframe.contentDocument.getElementsByClassName('layer');
-                            if (layers.length > 0) layers[layers.length - 1].remove();
-                        }}"""
-                    )
+                    }""")
 
-                # Resize the viewport to the canvas dimensions before sleeping.
-                # V1 did this on every page; the changing window size looks like
-                # real browser behaviour and avoids a static-viewport fingerprint.
+                # canvas_idx: 0 = single page, 1 = right side of a spread
+                # (layers before removal: ≤2 → idx=0; 3 → spread idx=1)
                 canvas_idx = max(0, (layers or 1) - 2)
 
-                # Wait for the target canvas to appear. Raise a retryable ValueError
-                # (not EndOfBook) on timeout — a slow render is not a true end-of-book.
-                # EndOfBook is only raised by the URL redirect check above, which is
-                # the authoritative signal from FAKKU's server.
-                canvas_count = page.evaluate(
-                    """() => {
-                        const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
-                        if (!iframe || !iframe.contentDocument) return -1;
-                        return iframe.contentDocument.getElementsByTagName('canvas').length;
-                    }"""
-                )
-                if canvas_count != -1 and (canvas_count == 0 or canvas_idx >= canvas_count):
+                # Poll for a full-size (>500 px) visible canvas using a Python loop
+                # so we can never hang indefinitely.  Playwright's wait_for_function
+                # can deadlock when the frame is mid-navigation; page.evaluate has its
+                # own per-call timeout and recovers cleanly.
+                canvas_poll_secs = max(60, config.page_timeout)
+                logger.info('Page %d: waiting for canvas (attempt %d)...', page_num, attempt + 1)
+                _deadline = time.time() + canvas_poll_secs
+                _canvas_ready = False
+                while time.time() < _deadline:
                     try:
-                        page.wait_for_function(
-                            f"""() => {{
-                                const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
-                                if (!iframe || !iframe.contentDocument) return false;
-                                return iframe.contentDocument.getElementsByTagName('canvas').length > {canvas_idx};
-                            }}""",
-                            timeout=int(config.page_timeout * 1000),
-                        )
+                        _canvas_ready = page.evaluate("""() => {
+                            const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
+                            if (!iframe || !iframe.contentDocument || !iframe.contentWindow) return false;
+                            return Array.from(iframe.contentDocument.getElementsByTagName('canvas')).some(c => {
+                                const s = iframe.contentWindow.getComputedStyle(c);
+                                return s.display !== 'none' && s.visibility !== 'hidden' && c.width > 500;
+                            });
+                        }""")
+                        if _canvas_ready:
+                            break
                     except Exception:
-                        logger.debug(
-                            'Page %d: canvas %d not found (canvas_count=%s) within timeout — retrying as transient error',
-                            page_num, canvas_idx, canvas_count,
-                        )
-                        raise ValueError(
-                            f'Canvas {canvas_idx} did not appear for page {page_num} within timeout'
-                        )
-                canvas_dims = page.evaluate(
-                    f"""() => {{
-                        const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
-                        if (!iframe || !iframe.contentDocument) return null;
-                        const c = iframe.contentDocument.getElementsByTagName('canvas')[{canvas_idx}];
-                        return c ? {{width: c.width, height: c.height}} : null;
-                    }}"""
-                )
-                if canvas_dims and canvas_dims.get('width') and canvas_dims.get('height'):
-                    offset = self._browser.get_chrome_offset()
-                    page.set_viewport_size({
-                        'width': canvas_dims['width'],
-                        'height': canvas_dims['height'] + offset,
-                    })
+                        pass
+                    time.sleep(0.5)
+                if not _canvas_ready:
+                    try:
+                        _diag = page.evaluate("""() => {
+                            const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
+                            if (!iframe || !iframe.contentDocument) return [{error: 'no iframe'}];
+                            return Array.from(iframe.contentDocument.getElementsByTagName('canvas'))
+                                .map(c => ({w: c.width, h: c.height, display: getComputedStyle(c).display}));
+                        }""")
+                        logger.warning('Canvas diagnostic for page %d: %s', page_num, _diag)
+                    except Exception as _de:
+                        logger.warning('Canvas diagnostic failed: %s', _de)
+                    raise ValueError(
+                        f'No full-size canvas appeared for page {page_num} within {canvas_poll_secs}s'
+                    )
 
-                # Wait for the page to fully render before capturing.
-                # Jitter avoids perfectly mechanical timing that rate limiters flag.
+                # Sleep after the canvas is confirmed loaded (soft-ban / rate-limit guard).
                 time.sleep(config.page_wait + random.uniform(0, 3))
 
-                # Screenshot the canvas element directly — this captures only the
-                # manga page pixels with no reader UI padding or surrounding whitespace.
-                canvas_locator = frame_locator.locator('canvas').nth(canvas_idx)
+                # Canvas is ready — read its DOM index and dimensions.
+                canvas_info = page.evaluate(
+                    f"""() => {{
+                        const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
+                        if (!iframe || !iframe.contentDocument || !iframe.contentWindow) return null;
+                        const iWin = iframe.contentWindow;
+                        const all = Array.from(iframe.contentDocument.getElementsByTagName('canvas'));
+                        const large = all
+                            .map((c, domIdx) => ({{c, domIdx}}))
+                            .filter(({{c}}) => {{
+                                const s = iWin.getComputedStyle(c);
+                                return s.display !== 'none' && s.visibility !== 'hidden' && c.width > 500;
+                            }});
+                        const target = large[{canvas_idx}] ?? large[0];
+                        if (!target) return null;
+                        return {{domIdx: target.domIdx, width: target.c.width, height: target.c.height}};
+                    }}"""
+                )
+                if not canvas_info:
+                    raise ValueError(f'No full-size canvas found for page {page_num}')
+
+                # Temporarily hide the overlay layer so the canvas element screenshot
+                # captures the manga image instead of the UI on top.
+                # Use visibility:hidden (not DOM removal) — React tracks element
+                # presence, not inline styles, so this won't corrupt its virtual DOM.
+                _has_overlay = bool(layers and layers > 1)
+                if _has_overlay:
+                    if reader_frame:
+                        reader_frame.evaluate("""() => {
+                            const ls = document.getElementsByClassName('layer');
+                            if (ls.length > 1) ls[ls.length - 1].style.visibility = 'hidden';
+                        }""")
+                    else:
+                        page.evaluate("""() => {
+                            const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
+                            if (!iframe || !iframe.contentDocument) return;
+                            const ls = iframe.contentDocument.getElementsByClassName('layer');
+                            if (ls.length > 1) ls[ls.length - 1].style.visibility = 'hidden';
+                        }""")
+
+                canvas_locator = frame_locator.locator('canvas').nth(canvas_info['domIdx'])
                 canvas_locator.screenshot(path=dest)
+
+                # Restore overlay before React's next render cycle.
+                if _has_overlay:
+                    if reader_frame:
+                        reader_frame.evaluate("""() => {
+                            const ls = document.getElementsByClassName('layer');
+                            if (ls.length > 1) ls[ls.length - 1].style.removeProperty('visibility');
+                        }""")
+                    else:
+                        page.evaluate("""() => {
+                            const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
+                            if (!iframe || !iframe.contentDocument) return;
+                            const ls = iframe.contentDocument.getElementsByClassName('layer');
+                            if (ls.length > 1) ls[ls.length - 1].style.removeProperty('visibility');
+                        }""")
+
+                # Resize viewport to canvas dimensions after the screenshot so any
+                # React re-render triggered by the resize doesn't race with the
+                # hidden-overlay state above.
+                offset = self._browser.get_chrome_offset()
+                page.set_viewport_size({
+                    'width': canvas_info['width'],
+                    'height': canvas_info['height'] + offset,
+                })
 
                 # Validate file size
                 size_kb = Path(dest).stat().st_size / 1024
@@ -516,6 +603,80 @@ class Downloader:
                     time.sleep(delays[attempt])
                 if attempt == config.max_retry - 1:
                     raise
+
+    # ------------------------------------------------------------------
+    # Reader navigation helpers
+    # ------------------------------------------------------------------
+
+    def _navigate_reader(self, book_url: str) -> None:
+        """Navigate to the FAKKU reader for book_url and wait for it to load."""
+        page = self._browser.page
+        config = self._config
+        reader_url = f'{book_url.rstrip("/")}/read/page/1'
+
+        for _attempt in range(3):
+            try:
+                page.goto(reader_url, wait_until='domcontentloaded', timeout=60000)
+                break
+            except Exception as _e:
+                if _attempt == 2:
+                    raise
+                _wait = 10 * (_attempt + 1)
+                logger.warning(
+                    'Reader load timed out (attempt %d/3) — waiting %ds and retrying',
+                    _attempt + 1, _wait,
+                )
+                time.sleep(_wait)
+        book_base = book_url.rstrip('/')
+        if f'{book_base}/read' not in page.url:
+            raise RuntimeError(
+                f'Soft-ban redirect detected: expected {book_base}/read, got {page.url}'
+            )
+        frame_locator = page.frame_locator('iframe[title="FAKKU Reader"]')
+        frame_locator.locator('div[data-name="PageView"]').wait_for(
+            timeout=int(config.page_timeout * 1000)
+        )
+        # Cache the reader's Frame object so _advance_reader_page can dispatch
+        # events from within the iframe's own JS context (more reliable than
+        # cross-frame synthetic events from the parent page).
+        self._reader_frame = next(
+            (f for f in page.frames if f.query_selector('div[data-name="PageView"]') is not None),
+            None,
+        )
+        logger.info('Reader frame %s', 'found' if self._reader_frame else 'NOT FOUND — will fall back to parent-page evaluation')
+
+
+    def _advance_reader_page(self) -> None:
+        """Advance the FAKKU reader to the next page via ArrowRight."""
+        # Dispatch from within the iframe's own JS context so React's synthetic
+        # event system receives it — cross-frame dispatch from the parent is ignored.
+        frame = getattr(self, '_reader_frame', None)
+        if frame:
+            try:
+                frame.evaluate(
+                    """() => {
+                        const props = {
+                            key: 'ArrowRight', keyCode: 39, which: 39,
+                            code: 'ArrowRight', bubbles: true, cancelable: true
+                        };
+                        document.dispatchEvent(new KeyboardEvent('keydown', props));
+                        document.dispatchEvent(new KeyboardEvent('keyup', props));
+                    }"""
+                )
+            except Exception:
+                pass
+        else:
+            # Fallback: dispatch from parent page context
+            self._browser.page.evaluate(
+                """() => {
+                    const iframe = document.querySelector('iframe[title="FAKKU Reader"]');
+                    if (iframe && iframe.contentDocument) {
+                        const props = {key: 'ArrowRight', keyCode: 39, bubbles: true, cancelable: true};
+                        iframe.contentDocument.dispatchEvent(new KeyboardEvent('keydown', props));
+                    }
+                }"""
+            )
+        time.sleep(0.5)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -561,8 +722,17 @@ class Downloader:
         config = self._config
         page = self._browser.page
 
-        # 1. Fetch book info page
-        page.goto(url, wait_until='domcontentloaded')
+        # 1. Fetch book info page (retry on timeout — Fakku occasionally hangs)
+        for _attempt in range(3):
+            try:
+                page.goto(url, wait_until='domcontentloaded', timeout=60000)
+                break
+            except Exception as _e:
+                if _attempt == 2:
+                    raise
+                _wait = 10 * (_attempt + 1)
+                logger.warning('Info page timed out (attempt %d/3) — waiting %ds and retrying', _attempt + 1, _wait)
+                time.sleep(_wait)
         time.sleep(5)
         html = page.content()
 
